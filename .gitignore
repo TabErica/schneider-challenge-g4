@@ -4,8 +4,6 @@ Data/
 *.xlsx
 *.zip
 *.pdf
-# challenge brief (project presentation)
-X_HEC_2026_Pres.pdf
 *.pptx
 *.png
 outputs/

@@ -57,9 +57,19 @@ def _read_zip_csv(zip_name, member, **kw):
         return pd.read_csv(io.BytesIO(z.read(member)), **kw)
 
 
-def load_rm():
+def load_rm(prefixes="SD"):
+    """Raw-material wide table. prefixes="SDL" also keeps the empty licensed L-series."""
     df = _read_zip_csv("data.zip", "data/rm_prices_monthly_wide.csv", parse_dates=["month"]).set_index("month")
-    return df[[c for c in df.columns if c[0] in "SD"]].astype(float)
+    return df[[c for c in df.columns if c[0] in prefixes]].astype(float)
+
+
+def load_rm_all():
+    return load_rm("SDL")
+
+
+def read_catalog(name):
+    """source_catalog.csv / energy_source_catalog.csv from data.zip."""
+    return _read_zip_csv("data.zip", f"data/{name}")
 
 
 def load_energy():
@@ -68,39 +78,63 @@ def load_energy():
 
 
 def _sheet_series(wb, sheet, col, start_row):
-    out = {}
+    """One sheet column as a monthly series. Dates go to the 1st of their month; how many moved is in attrs."""
+    out, moved = {}, 0
     for r in wb[sheet].iter_rows(values_only=True, min_row=start_row):
         d, v = r[0], r[col] if col < len(r) else None
         if hasattr(d, "year") and isinstance(v, (int, float)):
-            out[pd.Timestamp(d.year, d.month, 1)] = float(v)
-    return pd.Series(out).sort_index()
+            m = pd.Timestamp(d.year, d.month, 1)
+            if m in out:
+                raise ValueError(f"{sheet} col {col}: two rows in {m:%Y-%m}")
+            out[m], moved = float(v), moved + (d.day != 1)
+    s = pd.Series(out).sort_index()
+    s.attrs["dates_moved"] = int(moved)
+    return s
 
 
 def load_steel_licensed():
     """CRU / MEPS EUR/t prices, Germany (internal workbook)."""
     wb = openpyxl.load_workbook(DATA / "Copia de Europe Steel INDEXES.xlsx", read_only=True, data_only=True)
-    df = pd.DataFrame({
+    cols = {
         "meps_cr_de": _sheet_series(wb, "MEPS", 2, 6),
         "cru_cr_de": _sheet_series(wb, "CRU Flat", 12, 7),
         "cru_hdg_de": _sheet_series(wb, "CRU Flat", 18, 7),
         "ss304_base_de": _sheet_series(wb, "CRU Stainless", 1, 6),
         "ss304_alloy_de": _sheet_series(wb, "CRU Stainless", 2, 6),
-    })
+    }
+    df = pd.DataFrame(cols)
     df["ss304_de"] = df["ss304_base_de"] + df["ss304_alloy_de"]
+    df.attrs["dates_moved"] = {k: s.attrs["dates_moved"] for k, s in cols.items()}
     return df
 
 
 def load_epoxy():
-    """Epoxy cost build-up and data-quality notes."""
+    """Epoxy cost build-up (EUR/t). Dates go to the 1st of their month; how many moved is in attrs."""
     raw = pd.read_excel(DATA / "Epoxy for student.xlsx", header=0)
     raw.columns = ["date", "_", "benzene", "acetone", "ech", "other", "epoxy"]
     raw = raw.dropna(subset=["date"])
-    raw["month"] = pd.to_datetime(raw["date"]).dt.to_period("M").dt.to_timestamp()
+    date = pd.to_datetime(raw["date"])
+    raw["month"] = date.dt.to_period("M").dt.to_timestamp()
+    if raw["month"].duplicated().any():
+        raise ValueError("epoxy file: two rows in one month")
     df = raw.set_index("month")[["benzene", "acetone", "ech", "other", "epoxy"]].astype(float)
-    med = df["ech"].rolling(5, center=True, min_periods=3).median()
-    notes = [f"ECH {m:%Y-%m} = {df.at[m, 'ech']:.0f} (rolling median {med[m]:.0f}): likely typo"
-             for m in df.index[(df["ech"] / med) < 0.3]]
-    return df, notes
+    df.attrs["dates_moved"] = {"epoxy file": int((date.dt.day != 1).sum())}
+    return df
+
+
+def load_westmetall():
+    """Westmetall LME copper / aluminium monthly averages (cash, 3-month, stocks, ECB FX), as published (USD).
+
+    Keeps the 'Period status' column so the provisional month-to-date row can be dropped downstream."""
+    df = pd.read_excel(DATA / "LME_Copper_Aluminium_EU_Monthly_2016_2026.xlsx", sheet_name="Monthly Prices", header=4)
+    df = df.rename(columns={
+        "Month": "month", "Period status": "status", "Cu cash USD/t": "WM_CU_CASH", "Cu 3m USD/t": "WM_CU_3M",
+        "Al cash USD/t": "WM_AL_CASH", "Al 3m USD/t": "WM_AL_3M", "USD per EUR": "WM_FX",
+        "Cu avg stocks t": "WM_CU_STOCK", "Al avg stocks t": "WM_AL_STOCK"})
+    df = df[pd.to_datetime(df["month"], errors="coerce").notna()]
+    df["month"] = pd.to_datetime(df["month"]).dt.to_period("M").dt.to_timestamp()
+    cols = ["WM_CU_CASH", "WM_CU_3M", "WM_AL_CASH", "WM_AL_3M", "WM_FX", "WM_CU_STOCK", "WM_AL_STOCK"]
+    return df.set_index("month")[["status"] + cols].astype({c: float for c in cols})
 
 
 def load_price_benchmark():

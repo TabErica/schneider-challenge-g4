@@ -1,0 +1,27 @@
+# Checks run on every `git commit` (after `uv run pre-commit install`) and in CI (.github/workflows/ci.yml).
+# Main purpose: the challenge data must never reach the repo, including through notebook outputs.
+repos:
+  - repo: https://github.com/kynan/nbstripout
+    rev: 0.9.2
+    hooks:
+      - id: nbstripout  # removes outputs and execution counts from every committed notebook
+        args: ["--extra-keys", "metadata.kernelspec metadata.language_info.version"]  # machine-specific noise
+
+  - repo: local
+    hooks:
+      - id: no-data-files
+        name: no data files (challenge rule)
+        language: fail
+        entry: "Data files must not be committed. Keep them in Data/ (git-ignored)."
+        files: '(?i)\.(csv|tsv|xlsx|xlsm|xls|zip|parquet|feather|pkl|pickle|pdf|pptx|png|jpe?g)$'
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-added-large-files
+        args: ["--maxkb=1000"]
+      - id: check-merge-conflict
+      - id: check-yaml
+      - id: check-toml
+      - id: end-of-file-fixer
+      - id: trailing-whitespace

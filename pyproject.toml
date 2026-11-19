@@ -12,3 +12,9 @@ dependencies = [
     "statsmodels==0.15.0",
     "scikit-learn==1.9.1",
 ]
+
+[dependency-groups]
+dev = [
+    "ipykernel==7.4.0",
+    "pre-commit==4.7.0",
+]

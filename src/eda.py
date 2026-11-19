@@ -13,6 +13,7 @@ import pandas as pd
 from matplotlib import font_manager
 
 import data as D
+import preprocess as P
 
 DECK = os.environ.get("DECK") == "1"
 OUT = D.OUT / ("slides" if DECK else "eda")
@@ -112,7 +113,7 @@ def fig_families(rm, en, steel, epoxy):
         fig.suptitle("Input prices since 2018 by family, rebased Jan-2018 = 100", x=0.01, ha="left",
                      fontsize=14, fontweight="bold", color=INK)
     note(fig, 0.01, 0.005, "Sources: IMF/FRED, Eurostat, US BLS, ECB, Ember, CRU (internal file), epoxy file. "
-         "Epoxy May-2026 dip = ECH data typo.", fontsize=7.5, color=MUTED)
+         "Epoxy May-2026 = ECH typo, interpolated (preprocess.py).", fontsize=7.5, color=MUTED)
     fig.tight_layout(rect=(0, 0.02, 1, 0.95))
     save(fig, "fig01_price_families.png")
 
@@ -178,7 +179,7 @@ def fig_key_prices(rm, steel):
     shade(ax)
     ser, cols = {}, {}
     for name, (s, c) in key_prices(rm, steel).items():
-        s = s.dropna().loc[KEY_BASE:"2026-10-01"]
+        s = s.dropna().loc[KEY_BASE:]
         ser[name], cols[name] = 100 * s / s.iloc[0], c
         ax.plot(ser[name].index, ser[name].values, color=c, label=name)
     ax.axhline(100, color=AXIS, lw=1)
@@ -241,31 +242,15 @@ def fig_price_benchmark(bm):
     save(fig, "fig07_price_benchmark.png")
 
 
-def coverage_table(rm, en, steel, epoxy):
-    rows = []
-    series = [("data.zip (RM)", k, v[0], rm[k]) for k, v in D.TARGETS.items()]
-    series += [("data.zip", k, n, en[k] if k in en else rm[k]) for k, n in D.DRIVERS.items()]
-    series += [("Steel INDEXES (internal)", k, k, steel[k]) for k in ["meps_cr_de", "cru_cr_de", "cru_hdg_de", "ss304_de"]]
-    series += [("Epoxy file", "epoxy", "Epoxy resin (calculated)", epoxy["epoxy"])]
-    for src, key, name, s in series:
-        s = s.dropna()
-        rows.append({"source": src, "id": key, "name": name, "first": f"{s.index.min():%Y-%m}",
-                     "last": f"{s.index.max():%Y-%m}", "n_obs": len(s)})
-    pd.DataFrame(rows).to_csv(OUT / "data_coverage.csv", index=False)
-
-
 def main():
-    rm, en, steel = D.load_rm(), D.load_energy(), D.load_steel_licensed()
-    epoxy, notes = D.load_epoxy()
+    c = P.load()  # every source in one panel: cut at 2026-09, in EUR, typos corrected (coverage: series_catalog.csv)
     p = D.panel()
-    costs = D.bom_cost_table(rm, steel)
+    costs = D.bom_cost_table(c, c)
     costs.to_csv(OUT / "bom_cost_table.csv", index=False, float_format="%.4f")
-    coverage_table(rm, en, steel, epoxy)
-    print("data-quality notes:", notes)
-    fig_families(rm, en, steel, epoxy)
+    fig_families(c, c, c, c)
     fig_bom_index(p)
     fig_cost_structure(costs)
-    fig_key_prices(rm, steel)
+    fig_key_prices(c, c)
     fig_volatility(p)
     fig_price_benchmark(D.load_price_benchmark())
 
