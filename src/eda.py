@@ -162,6 +162,36 @@ def fig_cost_structure(costs):
     save(fig, "fig03_cost_structure.png")
 
 
+KEY_BASE = pd.Timestamp("2017-01-01")
+
+
+def key_prices(rm, steel):
+    """The four materials that drive BOM cost (colours match the cost-structure chart)."""
+    return {"Carbon steel (CRU CR coil)": (steel["cru_cr_de"], SLOT[0]),
+            "Stainless 304 (CRU)": (steel["ss304_de"], SLOT[1]),
+            "Copper (LME, EUR)": (rm["D01"], SLOT[2]),
+            "Plastics (EU PPI)": (rm["S11"], SLOT[4])}
+
+
+def fig_key_prices(rm, steel):
+    fig, ax = plt.subplots(figsize=(10, 4.8))
+    shade(ax)
+    ser, cols = {}, {}
+    for name, (s, c) in key_prices(rm, steel).items():
+        s = s.dropna().loc[KEY_BASE:"2026-10-01"]
+        ser[name], cols[name] = 100 * s / s.iloc[0], c
+        ax.plot(ser[name].index, ser[name].values, color=c, label=name)
+    ax.axhline(100, color=AXIS, lw=1)
+    ax.set_xlim(KEY_BASE, pd.Timestamp("2027-09-01"))
+    ax.set_ylabel(f"index, {KEY_BASE:%b-%Y} = 100")
+    ax.legend(loc="upper left", bbox_to_anchor=(0, 0.92))
+    end_labels(ax, ser, {k: cols[k] for k in ser})
+    title(ax, f"Key material prices, rebased {KEY_BASE:%b-%Y} = 100")
+    note(fig, 0.01, -0.02, "Sources: CRU Germany (internal steel file), LME via IMF/FRED converted with ECB EUR/USD, "
+         "Eurostat PPI.", fontsize=7.5, color=MUTED)
+    save(fig, "fig05_key_prices.png")
+
+
 def fig_volatility(p):
     ids = list(D.TARGETS) + ["RM6_NE_IQI_433520", "RMAirSeT_IIQ_24kV"]
     names = [D.TARGETS[i][0] if i in D.TARGETS else ("BOM index RM6" if "RM6" in i else "BOM index AirSeT") for i in ids]
@@ -235,6 +265,7 @@ def main():
     fig_families(rm, en, steel, epoxy)
     fig_bom_index(p)
     fig_cost_structure(costs)
+    fig_key_prices(rm, steel)
     fig_volatility(p)
     fig_price_benchmark(D.load_price_benchmark())
 

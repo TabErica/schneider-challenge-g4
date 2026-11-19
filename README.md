@@ -22,7 +22,7 @@ Outputs: `outputs/eda/` (charts, tables) and `outputs/backtest/` (predictions, s
 | File | Role |
 |---|---|
 | `src/data.py` | Loads all sources; targets; BOM (read from `data.zip`) and BOM cost index |
-| `src/eda.py` | Price families, BOM cost index, cost structure, volatility, price benchmark |
+| `src/eda.py` | Price families, key material prices, BOM cost index, cost structure, volatility, price benchmark |
 | `src/backtest.py` | Rolling backtest Jan-2020 → Sep-2026: naive, drift, ETS, Ridge, global GBM; P10/P50/P90 |
 | `src/plot_backtest.py` | Error relative to naive per series / model / horizon |
 | `src/diagrams.py` | Production chain (predictive links) and methodology diagrams |
