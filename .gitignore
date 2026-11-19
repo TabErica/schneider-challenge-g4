@@ -1,0 +1,10 @@
+# Challenge rule: never publish data files
+Data/
+*.csv
+*.xlsx
+*.zip
+*.pdf
+*.pptx
+*.png
+outputs/
+__pycache__/
