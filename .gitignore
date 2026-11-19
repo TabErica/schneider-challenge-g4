@@ -8,3 +8,6 @@ Data/
 *.png
 outputs/
 __pycache__/
+
+# local only: slide builder
+src/build_eda_slides.py
