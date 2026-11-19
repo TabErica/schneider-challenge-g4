@@ -1,11 +1,11 @@
-"""Run the pipeline: preprocess -> EDA -> backtest -> backtest chart -> diagrams.
+"""Run the pipeline: preprocess -> EDA -> risk EDA -> backtest -> backtest chart -> diagrams.
 Usage: python main.py [--skip-backtest]"""
 import subprocess
 import sys
 from pathlib import Path
 
 SRC = Path(__file__).resolve().parent / "src"
-steps = ["preprocess.py", "eda.py", "backtest.py", "plot_backtest.py", "diagrams.py"]
+steps = ["preprocess.py", "eda.py", "eda_risk.py", "backtest.py", "plot_backtest.py", "diagrams.py"]
 if "--skip-backtest" in sys.argv and (SRC.parent / "outputs/backtest/scores_per_series.csv").exists():
     steps.remove("backtest.py")
 for step in steps:

@@ -123,16 +123,25 @@ def fig_bom_index(p):
     shade(ax)
     for col, name, c in [("RM6_NE_IQI_433520", "RM6 (SF6, copper-heavy)", PROD_COLOR["RM6"]),
                          ("RMAirSeT_IIQ_24kV", "RM AirSeT (SF6-free, steel-heavy)", PROD_COLOR["AirSeT"])]:
-        ax.plot(p.index, p[col], color=c, label=name)
-        pk = p[col].idxmax()
-        ax.annotate(f"peak {p[col].max():.0f} ({pk:%b-%y})", (pk, p[col].max()), xytext=(8, -2),
-                    textcoords="offset points", ha="left", va="top", fontsize=8, color=INK2)
+        mkt = col + D.BOM_MKT
+        ax.plot(p.index, p[mkt], color=c, label=f"{name}, market prices")
+        ax.plot(p.index, p[col], color=c, lw=1.5, ls="--", label=f"{name}, PPI proxy")
+        pk = p[mkt].idxmax()
+        label = f"peak {p[mkt].max():.0f} ({pk:%b-%y})"
+        if col.startswith("RM6"):  # RM6 peak sits among the AirSeT lines: label in the empty area, with a leader
+            ax.annotate(label, (pk, p[mkt].max()), xytext=(pk + pd.DateOffset(months=13), p[mkt].max() + 18),
+                        ha="left", va="center", fontsize=8, color=INK2,
+                        arrowprops={"arrowstyle": "-", "color": MUTED, "lw": 0.8})
+        else:
+            ax.annotate(label, (pk, p[mkt].max()), xytext=(8, -2), textcoords="offset points", ha="left", va="top",
+                        fontsize=8, color=INK2)
     ax.axhline(100, color=AXIS, lw=1)
     title(ax, "Material cost index per unit (fixed Sep-2026 BOM weights, Sep-2026 = 100)")
     ax.legend(loc="upper left", bbox_to_anchor=(0, 0.92))
     ax.set_ylabel("index")
-    note(fig, 0.01, -0.02, "Weights = kg (BOM, data.zip) x EUR/t in Sep-2026. RM6 unlabelled 45% slice assumed "
-         "carbon steel. Plastics EUR/t assumed.", fontsize=7.5, color=MUTED)
+    note(fig, 0.01, -0.02, "Weights = kg (BOM, data.zip) x EUR/t in Sep-2026. Steel lines follow CRU prices (solid) or "
+         "the Eurostat steel PPI (dashed). RM6 unlabelled 45% slice assumed carbon steel. Plastics EUR/t assumed.",
+         fontsize=7.5, color=MUTED)
     save(fig, "fig02_bom_cost_index.png")
 
 
@@ -194,8 +203,8 @@ def fig_key_prices(rm, steel):
 
 
 def fig_volatility(p):
-    ids = list(D.TARGETS) + ["RM6_NE_IQI_433520", "RMAirSeT_IIQ_24kV"]
-    names = [D.TARGETS[i][0] if i in D.TARGETS else ("BOM index RM6" if "RM6" in i else "BOM index AirSeT") for i in ids]
+    ids = list(D.TARGETS) + [c for c in p.columns if c.startswith("RM")]
+    names = [D.TARGETS[i][0] if i in D.TARGETS else D.bom_label(i) for i in ids]
     lp = np.log(p[ids])
     tab = pd.concat([(np.exp(lp.shift(-h) - lp) - 1).abs().median().rename(h) for h in (3, 6, 9)], axis=1)
     tab.index = names
