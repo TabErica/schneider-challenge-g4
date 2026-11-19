@@ -1,0 +1,31 @@
+# The data is not in the repo, so CI cannot run the pipeline. It checks what it can without data:
+# the lockfile, the pre-commit hooks (no notebook outputs, no data files) and that the code imports.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: astral-sh/setup-uv@v10.3.3
+
+      - name: Lockfile matches pyproject.toml
+        run: uv lock --check
+
+      - name: Install the locked environment
+        run: uv sync --locked
+
+      - name: Pre-commit hooks (notebook outputs, data files, file hygiene)
+        run: uv run pre-commit run --all-files --show-diff-on-failure
+
+      - name: Code imports
+        run: uv run python -c "import sys; sys.path.insert(0, 'src'); import data, preprocess, eda, backtest, diagrams"

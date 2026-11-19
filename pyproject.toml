@@ -1,0 +1,20 @@
+[project]
+name = "schneider-challenge-g4"
+version = "0.1.0"
+description = "X-HEC x Schneider Electric Data Challenge 2026: raw-material price forecasting (group 4)"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pandas==3.0.5",
+    "numpy==2.5.3",
+    "openpyxl==3.1.5",
+    "matplotlib==3.11.2",
+    "statsmodels==0.15.0",
+    "scikit-learn==1.9.1",
+]
+
+[dependency-groups]
+dev = [
+    "ipykernel==7.4.0",
+    "pre-commit==4.7.0",
+]

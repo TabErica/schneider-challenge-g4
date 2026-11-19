@@ -8,6 +8,7 @@ import pandas as pd
 from matplotlib.patches import FancyArrowPatch, FancyBboxPatch
 
 import data as D
+import preprocess as P
 from eda import AXIS, DECK, INK, INK2, MUTED, PROD_COLOR, SLOT, SURF, save, title
 
 AHEAD_MIN = 0.3
@@ -16,11 +17,7 @@ AHEAD_MIN = 0.3
 def measured_links():
     """(kind, r) per link. "ahead": corr(last 3-m upstream change, next 3-m downstream change), no overlap.
     "same" (if ahead < AHEAD_MIN): corr of same-month monthly changes."""
-    rm, en, st = D.load_rm(), D.load_energy(), D.load_steel_licensed()
-    ep, _ = D.load_epoxy()
-    ep = ep.copy()
-    ep.loc[pd.Timestamp("2026-05-01"), ["ech", "epoxy"]] = np.nan  # typo month
-    df = rm.join(en[[c for c in en.columns if c not in rm.columns]]).join(st).join(ep).loc[:"2026-10-01"]
+    df = P.load()  # cut at the forecast origin, ECH typo corrected
     L = np.log(df.where(df > 0))
 
     def best(a, b):

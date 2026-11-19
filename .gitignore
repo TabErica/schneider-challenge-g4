@@ -11,3 +11,6 @@ __pycache__/
 
 # local only: slide builder
 src/build_eda_slides.py
+
+# uv virtual environment
+.venv/
