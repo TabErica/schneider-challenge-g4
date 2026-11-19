@@ -8,20 +8,40 @@ BOM cost index, then into ETO quote rules and an SF6-free migration strategy.
 
 ## Setup
 
-Put the challenge files, unchanged, in `Data/Data/` (zips are read in place): `data.zip`,
-`Copia de Europe Steel INDEXES.xlsx`, `Epoxy for student.xlsx`, `RMU_IQI_EU_Price_Benchmark_2017-2026_Synthetic.xlsx`.
+### 1. Data
+
+Put the challenge files, unchanged, in `Data/Data/`: `data.zip` (read in place; an already-extracted `Data/Data/data/`
+folder also works), `Copia de Europe Steel INDEXES.xlsx`, `Epoxy for student.xlsx`,
+`RMU_IQI_EU_Price_Benchmark_2017-2026_Synthetic.xlsx`.
+
+### 2. Python environment (uv)
+
+The environment is managed with [uv](https://docs.astral.sh/uv/). `pyproject.toml` lists the dependencies,
+`uv.lock` pins every package version and `.python-version` pins Python 3.12, so every machine gets the same setup.
 
 ```bash
-pip install -r requirements.txt
-python main.py                  # ~2 min; --skip-backtest reuses existing backtest results
+# install uv once (macOS / Linux; on Windows see the uv docs)
+curl -LsSf https://astral.sh/uv/install.sh | sh     # or: brew install uv
+
+uv sync                         # creates .venv/ with the exact locked versions (downloads Python 3.12 if needed)
+uv run python main.py           # ~2 min; --skip-backtest reuses existing backtest results
+uv run python src/eda.py        # any single step
 ```
+
+- No need to activate `.venv/`: `uv run` uses it automatically (or `source .venv/bin/activate`).
+- Add or remove a dependency with `uv add <pkg>` / `uv remove <pkg>`, then commit both `pyproject.toml` and `uv.lock`.
+- After pulling changes to `uv.lock`, run `uv sync` again.
+- Without uv: `pip install -r requirements.txt` (same versions; regenerate with
+  `uv export --no-hashes --no-dev -o requirements.txt` after changing dependencies).
+
+### 3. Outputs
 
 Outputs: `outputs/eda/` (charts, tables) and `outputs/backtest/` (predictions, scores).
 `DECK=1` renders charts in slide style to `outputs/slides/`. Colours: **RM6 green `#16884A`, RM AirSeT blue `#3478B8`**.
 
 | File | Role |
 |---|---|
-| `src/data.py` | Loads all sources; targets; BOM (read from `data.zip`) and BOM cost index |
+| `src/data.py` | Loads all sources; targets; BOM (read from `data.zip` or its extracted folder) and BOM cost index |
 | `src/eda.py` | Price families, key material prices, BOM cost index, cost structure, volatility, price benchmark |
 | `src/backtest.py` | Rolling backtest Jan-2020 → Sep-2026: naive, drift, ETS, Ridge, global GBM; P10/P50/P90 |
 | `src/plot_backtest.py` | Error relative to naive per series / model / horizon |

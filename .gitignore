@@ -4,6 +4,8 @@ Data/
 *.xlsx
 *.zip
 *.pdf
+# challenge brief (project presentation)
+X_HEC_2026_Pres.pdf
 *.pptx
 *.png
 outputs/
@@ -11,3 +13,6 @@ __pycache__/
 
 # local only: slide builder
 src/build_eda_slides.py
+
+# uv virtual environment
+.venv/

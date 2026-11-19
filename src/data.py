@@ -50,6 +50,9 @@ BOM_BASE = pd.Timestamp("2026-09-01")
 
 
 def _read_zip_csv(zip_name, member, **kw):
+    """Read `member` from the zip if present, else from the already-extracted folder (DATA / member)."""
+    if not (DATA / zip_name).exists() and (DATA / member).exists():
+        return pd.read_csv(DATA / member, **kw)
     with zipfile.ZipFile(DATA / zip_name) as z:
         return pd.read_csv(io.BytesIO(z.read(member)), **kw)
 
