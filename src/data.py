@@ -31,7 +31,9 @@ TARGETS = {
 }
 DRIVERS = {"ED01": "Brent (EUR/bbl)", "ED02": "EU gas TTF (EUR/MWh)", "E09": "Power Germany (EUR/MWh)", "S06": "EUR/USD"}
 
-# BOM masses come from data.zip (Schneider-internal, never hard-coded). Here only: proxy series and EUR/t source.
+# BOM masses come from the standalone BOM workbook (Schneider-internal, never hard-coded). It replaces the older
+# BOM shipped in data.zip (bom_materials.csv and the BOM_Materials sheet of data/RM_Prices_XHEC_Challenge.xlsx).
+BOM_FILE = DATA / "RM_Prices_XHEC_Challenge.xlsx"
 PRODUCT_ID = {"RMAirSeT IIQ 24kV IEC": "RMAirSeT_IIQ_24kV", "RM6_NE_IQI_433520": "RM6_NE_IQI_433520"}
 FAMILY_MAP = {  # BOM material_family -> (material, price proxy, EUR/t level source)
     "Carbon steel": ("Carbon steel", "S09", "cru_cr_de"),
@@ -45,8 +47,12 @@ FAMILY_MAP = {  # BOM material_family -> (material, price proxy, EUR/t level sou
 }
 # Assumptions to confirm with Schneider
 ASSUMED_PRICE_EUR_T = {"plastic_pet": 1300.0, "plastic_etp": 2700.0}
-ASSUMED_UNLABELLED_SHARE = 0.45  # RM6 largest unlabelled slice = carbon steel
+ASSUMED_UNLABELLED_SHARE = 0.45  # RM6 largest unlabelled slice = carbon steel, ~45% of mass (older BOM label)
 BOM_BASE = pd.Timestamp("2026-09-01")
+# Market-price version of the BOM index (see bom_index): steel lines follow CRU EUR/t prices, not the Eurostat PPI
+MARKET_PROXY = {"Carbon steel": "cru_cr_de", "Stainless steel": "ss304_de", "Galvanised steel": "cru_hdg_de"}
+BOM_MKT = "_mkt"  # column suffix of the market version
+TRAIL_FILL = 2  # months a price may be carried forward at the end of its series to reach BOM_BASE
 
 
 def _read_zip_csv(zip_name, member, **kw):
@@ -151,9 +157,11 @@ def eur_levels(rm, steel):
 
 
 def load_bom():
-    """Priceable BOM lines (kg per unit) from data.zip, with the unlabelled-slice assumption applied."""
-    raw = _read_zip_csv("data.zip", "data/bom_materials.csv")
+    """Priceable BOM lines (kg per unit) from BOM_FILE, with the unlabelled-slice assumption applied."""
+    raw = pd.read_excel(BOM_FILE, sheet_name="BOM_Materials")
     raw = raw[raw["product_ref"].isin(PRODUCT_ID)]
+    if set(raw["product_ref"]) != set(PRODUCT_ID):
+        raise ValueError(f"{BOM_FILE.name}: expected products {sorted(PRODUCT_ID)}, found {sorted(set(raw['product_ref']))}")
     rows = []
     for ref, g in raw.groupby("product_ref"):
         known = g.dropna(subset=["mass_kg", "share_pct"])
@@ -177,17 +185,52 @@ def bom_cost_table(rm, steel):
     return df
 
 
-def bom_index(rm, steel):
-    """Laspeyres material-cost index per product, fixed Sep-2026 cost shares, Sep-2026 = 100."""
+def _price_relative(prices, col):
+    """prices[col] / its BOM_BASE value. A market price that ends before BOM_BASE (ragged edge: stainless ends
+    Aug-2026) is carried forward at most TRAIL_FILL months, after its last value only."""
+    s = prices[col].loc[:BOM_BASE]
+    last = s.last_valid_index()
+    s = s.where(s.index <= last, s.ffill(limit=TRAIL_FILL))
+    if pd.isna(s.get(BOM_BASE)):
+        raise ValueError(f"{col}: no value at {BOM_BASE:%Y-%m} even after carrying forward {TRAIL_FILL} months")
+    return s / s.at[BOM_BASE]
+
+
+def bom_components(prices, costs, version="proxy"):
+    """{index column: DataFrame month x material} of 100 x cost share x price relative. Rows sum to bom_index.
+
+    version="proxy":  every line follows its BOM proxy; steel lines follow the Eurostat PPI (S09, S10).
+    version="market": steel lines follow the CRU EUR/t price that also sets their weight (MARKET_PROXY), which is
+                      the BOM file's first choice (L01-L03). Copper, aluminium and plastics are the same in both.
+    Index column names: product id, plus BOM_MKT for the market version."""
     out = {}
-    for prod, g in bom_cost_table(rm, steel).groupby("product"):
-        out[prod] = 100 * sum(r.cost_share * rm[r.proxy] / rm.at[BOM_BASE, r.proxy] for r in g.itertuples())
-    return pd.DataFrame(out)
+    for prod, g in costs.groupby("product"):
+        name = prod + (BOM_MKT if version == "market" else "")
+        out[name] = pd.DataFrame({
+            r.material: 100 * r.cost_share * _price_relative(
+                prices, MARKET_PROXY.get(r.material, r.proxy) if version == "market" else r.proxy)
+            for r in g.itertuples()})
+    return out
+
+
+def bom_index(prices, costs, version="proxy"):
+    """Laspeyres material-cost index per product: fixed Sep-2026 cost shares (`costs`), Sep-2026 = 100.
+    NaN in a month where any material price is missing. See bom_components for the two versions."""
+    return pd.DataFrame({k: v.sum(axis=1, min_count=v.shape[1]) for k, v in bom_components(prices, costs, version).items()})
+
+
+def bom_label(sid):
+    """Readable name of a BOM index column."""
+    prod = "RM6" if sid.startswith("RM6") else "AirSeT"
+    return f"BOM {prod} ({'market prices' if sid.endswith(BOM_MKT) else 'PPI proxy'})"
 
 
 def panel():
-    """Targets + BOM indices + drivers, Nov-2016 .. Sep-2026."""
-    rm, en, steel = load_rm(), load_energy(), load_steel_licensed()
-    df = rm[list(TARGETS)].join(bom_index(rm, steel)).join(en[[d for d in DRIVERS if d != "S06"]])
-    df["S06"] = rm["S06"]
-    return df.loc[:BOM_BASE]
+    """Targets + both BOM indices + drivers, Nov-2016 .. Sep-2026, from the preprocessed panel."""
+    import preprocess as P  # local import: preprocess imports this module
+
+    c = P.load()
+    costs = bom_cost_table(c, c)
+    df = c[list(TARGETS)].join([bom_index(c, costs, "proxy"), bom_index(c, costs, "market"),
+                                c[[d for d in DRIVERS if d != "S06"] + ["S06"]]])
+    return df.loc[c["D01"].first_valid_index():BOM_BASE]

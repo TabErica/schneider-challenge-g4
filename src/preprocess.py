@@ -232,7 +232,7 @@ def build(save=True):
     cat = build_catalog(p, raw, meta, log)
     if save:
         OUT.mkdir(parents=True, exist_ok=True)
-        p.to_csv(OUT / "panel_monthly.csv", float_format="%.6g")
+        p.to_csv(OUT / "panel_monthly.csv", float_format="%.10g")
         cat.to_csv(OUT / "series_catalog.csv", index=False)
         log.frame().to_csv(OUT / "transform_log.csv", index=False)
     return p, cat, log.frame()

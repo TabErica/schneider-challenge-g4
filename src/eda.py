@@ -115,7 +115,7 @@ def fig_families(rm, en, steel, epoxy):
     note(fig, 0.01, 0.005, "Sources: IMF/FRED, Eurostat, US BLS, ECB, Ember, CRU (internal file), epoxy file. "
          "Epoxy May-2026 = ECH typo, interpolated (preprocess.py).", fontsize=7.5, color=MUTED)
     fig.tight_layout(rect=(0, 0.02, 1, 0.95))
-    save(fig, "fig01_price_families.png")
+    return fig
 
 
 def fig_bom_index(p):
@@ -123,17 +123,26 @@ def fig_bom_index(p):
     shade(ax)
     for col, name, c in [("RM6_NE_IQI_433520", "RM6 (SF6, copper-heavy)", PROD_COLOR["RM6"]),
                          ("RMAirSeT_IIQ_24kV", "RM AirSeT (SF6-free, steel-heavy)", PROD_COLOR["AirSeT"])]:
-        ax.plot(p.index, p[col], color=c, label=name)
-        pk = p[col].idxmax()
-        ax.annotate(f"peak {p[col].max():.0f} ({pk:%b-%y})", (pk, p[col].max()), xytext=(8, -2),
-                    textcoords="offset points", ha="left", va="top", fontsize=8, color=INK2)
+        mkt = col + D.BOM_MKT
+        ax.plot(p.index, p[mkt], color=c, label=f"{name}, market prices")
+        ax.plot(p.index, p[col], color=c, lw=1.5, ls="--", label=f"{name}, PPI proxy")
+        pk = p[mkt].idxmax()
+        label = f"peak {p[mkt].max():.0f} ({pk:%b-%y})"
+        if col.startswith("RM6"):  # RM6 peak sits among the AirSeT lines: label in the empty area, with a leader
+            ax.annotate(label, (pk, p[mkt].max()), xytext=(pk + pd.DateOffset(months=13), p[mkt].max() + 18),
+                        ha="left", va="center", fontsize=8, color=INK2,
+                        arrowprops={"arrowstyle": "-", "color": MUTED, "lw": 0.8})
+        else:
+            ax.annotate(label, (pk, p[mkt].max()), xytext=(8, -2), textcoords="offset points", ha="left", va="top",
+                        fontsize=8, color=INK2)
     ax.axhline(100, color=AXIS, lw=1)
     title(ax, "Material cost index per unit (fixed Sep-2026 BOM weights, Sep-2026 = 100)")
     ax.legend(loc="upper left", bbox_to_anchor=(0, 0.92))
     ax.set_ylabel("index")
-    note(fig, 0.01, -0.02, "Weights = kg (BOM, data.zip) x EUR/t in Sep-2026. RM6 unlabelled 45% slice assumed "
-         "carbon steel. Plastics EUR/t assumed.", fontsize=7.5, color=MUTED)
-    save(fig, "fig02_bom_cost_index.png")
+    note(fig, 0.01, -0.02, "Weights = kg (standalone BOM workbook) x EUR/t in Sep-2026. Steel lines follow CRU prices (solid) or "
+         "the Eurostat steel PPI (dashed). RM6 unlabelled 45% slice assumed carbon steel. Plastics EUR/t assumed.",
+         fontsize=7.5, color=MUTED)
+    return fig
 
 
 def fig_cost_structure(costs):
@@ -160,7 +169,7 @@ def fig_cost_structure(costs):
     title(ax, "Two products, two different risks: RM6 is a copper bet, AirSeT a steel bet", pad=28)
     note(fig, 0.01, -0.06, "Sep-2026 prices: copper/aluminium LME (EUR), steel CRU Germany, stainless CRU 304 (Aug-26). "
          "Plastics EUR/t assumed. RM6 unlabelled 45% slice assumed carbon steel.", fontsize=7.5, color=MUTED)
-    save(fig, "fig03_cost_structure.png")
+    return fig
 
 
 KEY_BASE = pd.Timestamp("2017-01-01")
@@ -190,16 +199,65 @@ def fig_key_prices(rm, steel):
     title(ax, f"Key material prices, rebased {KEY_BASE:%b-%Y} = 100")
     note(fig, 0.01, -0.02, "Sources: CRU Germany (internal steel file), LME via IMF/FRED converted with ECB EUR/USD, "
          "Eurostat PPI.", fontsize=7.5, color=MUTED)
-    save(fig, "fig05_key_prices.png")
+    return fig
 
 
-def fig_volatility(p):
-    ids = list(D.TARGETS) + ["RM6_NE_IQI_433520", "RMAirSeT_IIQ_24kV"]
-    names = [D.TARGETS[i][0] if i in D.TARGETS else ("BOM index RM6" if "RM6" in i else "BOM index AirSeT") for i in ids]
+def key_price_stats(rm, steel):
+    """Level at KEY_BASE and at the last month, change since KEY_BASE, peak and distance from the peak."""
+    rows = {}
+    for name, (s, _) in key_prices(rm, steel).items():
+        s = s.dropna().loc[KEY_BASE:]
+        rows[name] = {f"{KEY_BASE:%b-%y}": s.iloc[0], "last month": f"{s.index[-1]:%b-%y}", "last": s.iloc[-1],
+                      f"change since {KEY_BASE:%b-%y}": s.iloc[-1] / s.iloc[0] - 1,
+                      "peak month": f"{s.idxmax():%b-%y}", "last vs peak": s.iloc[-1] / s.max() - 1}
+    return pd.DataFrame.from_dict(rows, orient="index")
+
+
+def unit_cost(p, costs):
+    """Material cost per unit (EUR) over time: each cost index x the product's Sep-2026 cost per unit / 100."""
+    total = costs.groupby("product")["eur_per_unit"].sum()
+    cols = [c for c in p.columns if c.startswith("RM")]
+    return pd.DataFrame({c: p[c] / 100 * total[c.removesuffix(D.BOM_MKT)] for c in cols})
+
+
+def unit_cost_stats(p, costs):
+    """Per cost index: EUR per unit at BOM_BASE, change over 12 months, peak and distance from the peak."""
+    u = unit_cost(p, costs)
+    last, year_ago = D.BOM_BASE, D.BOM_BASE - pd.DateOffset(months=12)
+    return pd.DataFrame.from_dict(orient="index", data={D.bom_label(c): {
+        f"EUR / unit {last:%b-%y}": s[last], f"EUR / unit {year_ago:%b-%y}": s[year_ago],
+        "change 12 m": s[last] / s[year_ago] - 1, "peak month": f"{s.idxmax():%b-%y}",
+        "peak EUR / unit": s.max(), "last vs peak": s[last] / s.max() - 1} for c, s in u.items()})
+
+
+VOL_GROUP = {"D01": "Exchange price", "S01": "Exchange price", "D02": "Exchange price", "S02": "Exchange price",
+             "S03": "Exchange price", "S05": "Exchange price", "S04": "Exchange price",
+             "S07": "EU PPI", "S08": "EU PPI", "S09": "EU PPI", "S10": "EU PPI", "S11": "EU PPI",
+             "S12": "US PPI", "S13": "US PPI"}
+
+
+def volatility_by_horizon(p):
+    """Median |price(t+h) / price(t) - 1| over all start months, h = 3, 6, 9, per series, with its group."""
+    ids = list(D.TARGETS) + [c for c in p.columns if c.startswith("RM")]
     lp = np.log(p[ids])
     tab = pd.concat([(np.exp(lp.shift(-h) - lp) - 1).abs().median().rename(h) for h in (3, 6, 9)], axis=1)
-    tab.index = names
-    tab = tab.sort_values(9)
+    tab["group"] = [VOL_GROUP.get(i, "BOM cost index") for i in ids]
+    tab.index = [D.TARGETS[i][0] if i in D.TARGETS else D.bom_label(i) for i in ids]
+    return tab.sort_values(9)
+
+
+def horizon_summary(tab):
+    """Range (min-max) of the median absolute change per group and horizon, and the 9-month / 3-month ratio."""
+    g = tab.groupby("group")
+    out = pd.DataFrame({f"{h} m": g[h].min().map("{:.1%}".format) + " - " + g[h].max().map("{:.1%}".format)
+                        for h in (3, 6, 9)})
+    out["9 m / 3 m (median)"] = g.apply(lambda d: (d[9] / d[3]).median()).round(2)
+    out["n series"] = g.size()
+    return out
+
+
+def fig_volatility(tab):
+    tab = tab[[3, 6, 9]]
     fig, ax = plt.subplots(figsize=(9.5, 5.3) if DECK else (9, 6.2))
     y = np.arange(len(tab))
     for j, (h, c) in enumerate({3: "#86b6ef", 6: "#2a78d6", 9: "#104281"}.items()):
@@ -210,8 +268,7 @@ def fig_volatility(p):
     ax.legend(loc="lower right", title="horizon")
     title(ax, "How much does each series typically move in 3 / 6 / 9 months?")
     note(fig, 0.01, -0.01, "Nov-2016 to Sep-2026, all rolling windows.", fontsize=7.5, color=MUTED)
-    save(fig, "fig04_volatility_by_horizon.png")
-    tab.to_csv(OUT / "volatility_by_horizon.csv", float_format="%.4f")
+    return fig
 
 
 def fig_price_benchmark(bm):
@@ -239,7 +296,17 @@ def fig_price_benchmark(bm):
     title(ax, "3-function RMU selling price: SF6 products jump in 2026, the SF6-free premium disappears")
     note(fig, 0.01, -0.02, "Source: RMU_IQI_EU_Price_Benchmark_2017-2026_Synthetic (synthetic, yearly).",
          fontsize=7.5, color=MUTED)
-    save(fig, "fig07_price_benchmark.png")
+    return fig
+
+
+def benchmark_table(bm):
+    """Per brand: median selling price 2025 and 2026, 2026 change, and price relative to Schneider."""
+    p50 = bm.pivot(index="brand", columns="year", values="p50")
+    se = p50.loc["Schneider Electric"]
+    return pd.DataFrame({"P50 2025": p50[2025], "P50 2026": p50[2026], "change 2026": p50[2026] / p50[2025] - 1,
+                         "vs Schneider 2025": p50[2025] / se[2025] - 1, "vs Schneider 2026": p50[2026] / se[2026] - 1,
+                         "change 2017-25 (per year)": (p50[2025] / p50[2017]) ** (1 / 8) - 1}
+                        ).sort_values("P50 2026", ascending=False)
 
 
 def main():
@@ -247,12 +314,14 @@ def main():
     p = D.panel()
     costs = D.bom_cost_table(c, c)
     costs.to_csv(OUT / "bom_cost_table.csv", index=False, float_format="%.4f")
-    fig_families(c, c, c, c)
-    fig_bom_index(p)
-    fig_cost_structure(costs)
-    fig_key_prices(c, c)
-    fig_volatility(p)
-    fig_price_benchmark(D.load_price_benchmark())
+    vol = volatility_by_horizon(p)
+    vol.to_csv(OUT / "volatility_by_horizon.csv", float_format="%.4f")
+    save(fig_families(c, c, c, c), "fig01_price_families.png")
+    save(fig_bom_index(p), "fig02_bom_cost_index.png")
+    save(fig_cost_structure(costs), "fig03_cost_structure.png")
+    save(fig_volatility(vol), "fig04_volatility_by_horizon.png")
+    save(fig_key_prices(c, c), "fig05_key_prices.png")
+    save(fig_price_benchmark(D.load_price_benchmark()), "fig07_price_benchmark.png")
 
 
 if __name__ == "__main__":

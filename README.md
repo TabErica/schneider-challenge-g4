@@ -12,7 +12,8 @@ BOM cost index, then into ETO quote rules and an SF6-free migration strategy.
 
 Put the challenge files, unchanged, in `Data/Data/`: `data.zip` (read in place; an already-extracted `Data/Data/data/`
 folder also works), `Copia de Europe Steel INDEXES.xlsx`, `Epoxy for student.xlsx`,
-`LME_Copper_Aluminium_EU_Monthly_2016_2026.xlsx`, `RMU_IQI_EU_Price_Benchmark_2017-2026_Synthetic.xlsx`.
+`LME_Copper_Aluminium_EU_Monthly_2016_2026.xlsx`, `RMU_IQI_EU_Price_Benchmark_2017-2026_Synthetic.xlsx`, and the
+standalone BOM workbook `RM_Prices_XHEC_Challenge.xlsx` (BOM_Materials sheet; it replaces the older BOM in `data.zip`).
 
 ### 2. Python environment (uv)
 
@@ -66,13 +67,15 @@ and `outputs/backtest/` (predictions, scores).
 
 | File | Role |
 |---|---|
-| `src/data.py` | Reads every source as published; targets; BOM (from `data.zip` or its extracted folder) and BOM cost index |
+| `src/data.py` | Reads every source as published; targets; BOM (from `data.zip` or its extracted folder); BOM cost index in two versions (PPI proxy, market prices) |
 | `src/preprocess.py` | One monthly panel: month-start dates, cut at Sep-2026, typo corrections, gap fill, USD → EUR. Writes `panel_monthly.csv`, `series_catalog.csv`, `transform_log.csv` |
 | `notebooks/01_data_quality.ipynb` | Coverage, missing values, wrong values, derived-column checks, IMF vs Westmetall, steel PPI vs CRU / MEPS |
-| `src/eda.py` | Price families, key material prices, BOM cost index, cost structure, volatility, price benchmark |
+| `src/eda.py` | Price families, key material prices, BOM cost index and cost per unit, cost structure, volatility by horizon, price benchmark (figures and the tables behind them) |
+| `src/eda_risk.py` | Risk EDA: unit roots, fat tails, volatility clustering, band coverage, cost-index rises (3/6/9 m) and their drivers, regimes, correlations (fig11–fig15, `risk_*.csv`) |
+| `notebooks/02_eda_risk.ipynb` | Conclusions of the EDA: risk (§1–4), key prices, cost per unit, risk by horizon, supply-chain links, selling-price benchmark (§5–9) |
 | `src/backtest.py` | Rolling backtest Jan-2020 → Sep-2026: naive, drift, ETS, Ridge, global GBM; P10/P50/P90 |
 | `src/plot_backtest.py` | Error relative to naive per series / model / horizon |
-| `src/diagrams.py` | Production chain (predictive links) and methodology diagrams |
+| `src/diagrams.py` | Production chain (predictive links, `link_table`) and methodology diagrams |
 
 ## Findings so far
 
@@ -84,22 +87,32 @@ and `outputs/backtest/` (predictions, scores).
   120 monthly points per series is too little.
 - **Upstream prices help predict the next 3 months** for aluminium, steel, stainless and plastics (r 0.4–0.6).
   Copper LME and the EU copper index move in the same month.
-- **Ranges are too narrow**: about 68% coverage against an 80% target.
+- **Ranges are too narrow**: about 68% coverage against an 80% target. Why (risk EDA): misses are mostly upwards
+  (18% above vs 7% below the band) and the 2020-26 volatility is about 2× the pre-2020 level; fat tails only matter
+  beyond P95.
+- **The PPI proxy halves the steel risk**: with CRU market prices, the 3-month cost rise of one unit has P90 +12% /
+  P95 +17% (RM6) and P90 +14% / P95 +24% (AirSeT); the PPI-proxy index gives P95 +12% / +15%.
+- **Correlations double in stress** (mean pairwise 0.22 calm vs 0.45 in 2020-22): the cost P10 / P90 needs joint
+  scenarios; summing material quantiles is off by 15–36%.
 
 ## Next steps
 
-1. Forecast CSV `<team>_forecast_202609.csv`: per-series model choice by backtest, calibrated intervals.
+1. Forecast CSV `<team>_forecast_202609.csv`: per-series model choice by backtest, calibrated intervals (wider,
+   asymmetric, from a window that includes 2020-22).
 2. Market prices: LME 3-month forward and the Oct-2026 analyst view as P50 adjustments.
 3. Indices: add only the upstream drivers that predict 3 months ahead (a Ridge with all drivers did not beat naive).
 4. Pretrained model (Chronos-Bolt) as a benchmark.
 5. Publication lags in the backtest: `preprocess.as_of()` cuts each series by its lag (`lag_m` in `series_catalog.csv`).
-6. Business layer: forecast → BOM cost → margin at risk → quote rule.
+6. Business layer: joint scenarios (resample whole months) → BOM cost (market-price index) → margin at risk → quote rule.
 
 ## Assumptions and limits
 
-- RM6 largest unlabelled BOM slice (~45%) = carbon steel; polymer EUR/t assumed (`src/data.py`). Two BOM versions
-  exist; the `data.zip` one is used.
-- BOM index: fixed Sep-2026 weights; stainless follows the EU steel PPI (BOM proxy), not nickel.
+- BOM from the standalone `RM_Prices_XHEC_Challenge.xlsx`; the older BOM in `data.zip` (`bom_materials.csv`) is not
+  used. RM6 largest unlabelled slice = carbon steel at 45% of the implied mass (the share the older BOM label gave);
+  polymer EUR/t assumed (`src/data.py`).
+- BOM index: fixed Sep-2026 weights. Two versions: steel lines follow the EU / German steel PPI (S09 / S10, the BOM
+  fallback) or the CRU EUR/t prices (`*_mkt`, the BOM's first choice). Stainless 304 ends Aug-2026 and is carried to
+  Sep-2026 in the market version.
 - Backtest assumes month-t data is known at origin t.
 - Price benchmark is synthetic and not like-for-like (Xiria 630 A / 21 kA vs RM6 400 A / 12.5 kA).
 - Epoxy file: ECH (and so epoxy) May-2026 is a typo, about 10× too low; set to NaN and interpolated (`preprocess.py`).
