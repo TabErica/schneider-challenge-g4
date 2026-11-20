@@ -70,12 +70,12 @@ and `outputs/backtest/` (predictions, scores).
 | `src/data.py` | Reads every source as published; targets; BOM (from `data.zip` or its extracted folder); BOM cost index in two versions (PPI proxy, market prices) |
 | `src/preprocess.py` | One monthly panel: month-start dates, cut at Sep-2026, typo corrections, gap fill, USD → EUR. Writes `panel_monthly.csv`, `series_catalog.csv`, `transform_log.csv` |
 | `notebooks/01_data_quality.ipynb` | Coverage, missing values, wrong values, derived-column checks, IMF vs Westmetall, steel PPI vs CRU / MEPS |
-| `src/eda.py` | Price families, key material prices, BOM cost index, cost structure, volatility, price benchmark |
+| `src/eda.py` | Price families, key material prices, BOM cost index and cost per unit, cost structure, volatility by horizon, price benchmark (figures and the tables behind them) |
 | `src/eda_risk.py` | Risk EDA: unit roots, fat tails, volatility clustering, band coverage, cost-index rises (3/6/9 m) and their drivers, regimes, correlations (fig11–fig15, `risk_*.csv`) |
-| `notebooks/02_eda_risk.ipynb` | Conclusions of the risk EDA |
+| `notebooks/02_eda_risk.ipynb` | Conclusions of the EDA: risk (§1–4), key prices, cost per unit, risk by horizon, supply-chain links, selling-price benchmark (§5–9) |
 | `src/backtest.py` | Rolling backtest Jan-2020 → Sep-2026: naive, drift, ETS, Ridge, global GBM; P10/P50/P90 |
 | `src/plot_backtest.py` | Error relative to naive per series / model / horizon |
-| `src/diagrams.py` | Production chain (predictive links) and methodology diagrams |
+| `src/diagrams.py` | Production chain (predictive links, `link_table`) and methodology diagrams |
 
 ## Findings so far
 

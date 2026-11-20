@@ -14,27 +14,44 @@ from eda import AXIS, DECK, INK, INK2, MUTED, PROD_COLOR, SLOT, SURF, save, titl
 AHEAD_MIN = 0.3
 
 
-def measured_links():
-    """(kind, r) per link. "ahead": corr(last 3-m upstream change, next 3-m downstream change), no overlap.
-    "same" (if ahead < AHEAD_MIN): corr of same-month monthly changes."""
+LINKS = {  # (upstream node, downstream node) -> (upstream series, downstream series, label)
+    ("brent", "chem"): ("ED01", "benzene", "Brent -> benzene"),
+    ("brent", "plast"): ("ED01", "S11", "Brent -> plastics PPI EU"),
+    ("chem", "epoxy"): ("benzene", "epoxy", "benzene -> epoxy resin"),
+    ("gas", "alu_m"): ("ED02", "S08", "gas TTF -> aluminium PPI EU"),
+    ("power", "alu_m"): ("E09", "S08", "power DE -> aluminium PPI EU"),
+    ("gas", "cs"): ("ED02", "S09", "gas TTF -> steel PPI EU"),
+    ("ore", "cs"): ("S04", "cru_cr_de", "iron ore -> CR coil (CRU)"),
+    ("zinc", "hdg"): ("S05", "cru_hdg_de", "zinc -> HDG coil (CRU)"),
+    ("cs", "hdg"): ("cru_cr_de", "cru_hdg_de", "CR coil -> HDG coil (CRU)"),
+    ("nickel", "ss"): ("S03", "ss304_alloy_de", "nickel -> stainless 304 alloy surcharge"),
+    ("cu_lme", "cu_m"): ("D01", "S07", "copper LME -> copper PPI EU"),
+    ("al_lme", "alu_m"): ("D02", "S08", "aluminium LME -> aluminium PPI EU"),
+}
+
+
+def link_table():
+    """Both measures for every link of the chain. "next 3 m": corr(last 3-m upstream change, next 3-m downstream
+    change), no overlap; "same month": corr of monthly changes. The chart shows "next 3 m" when it is >= AHEAD_MIN,
+    else "same month". Each pair on its common months, up to the cutoff."""
     df = P.load()  # cut at the forecast origin, ECH typo corrected
     L = np.log(df.where(df > 0))
-
-    def best(a, b):
+    rows = {}
+    for k, (a, b, label) in LINKS.items():
         ahead = (L[b].shift(-3) - L[b]).corr(L[a] - L[a].shift(3))
-        if ahead >= AHEAD_MIN:
-            return "ahead", ahead
-        return "same", L[b].diff().corr(L[a].diff())
+        same = L[b].diff().corr(L[a].diff())
+        both = L[[a, b]].dropna()
+        rows[k] = {"link": label, "upstream": a, "downstream": b, "next 3 m r": ahead, "same month r": same,
+                   "shown": "next 3 m" if ahead >= AHEAD_MIN else "same month",
+                   "months": f"{both.index[0]:%b-%y} - {both.index[-1]:%b-%y}"}
+    return pd.DataFrame.from_dict(rows, orient="index")
 
-    pairs = {
-        ("brent", "chem"): ("ED01", "benzene"), ("brent", "plast"): ("ED01", "S11"),
-        ("chem", "epoxy"): ("benzene", "epoxy"), ("gas", "alu_m"): ("ED02", "S08"),
-        ("power", "alu_m"): ("E09", "S08"), ("gas", "cs"): ("ED02", "S09"),
-        ("ore", "cs"): ("S04", "cru_cr_de"), ("zinc", "hdg"): ("S05", "cru_hdg_de"),
-        ("cs", "hdg"): ("cru_cr_de", "cru_hdg_de"), ("nickel", "ss"): ("S03", "ss304_alloy_de"),
-        ("cu_lme", "cu_m"): ("D01", "S07"), ("al_lme", "alu_m"): ("D02", "S08"),
-    }
-    return {k: best(*v) for k, v in pairs.items()}
+
+def measured_links():
+    """(kind, r) per link, as drawn: ("ahead", next-3-m r) if it is >= AHEAD_MIN, else ("same", same-month r)."""
+    t = link_table()
+    return {k: ("ahead", r["next 3 m r"]) if r["shown"] == "next 3 m" else ("same", r["same month r"])
+            for k, r in t.iterrows()}
 
 
 K = 1.3 if DECK else 1.0  # larger text in slide style
@@ -152,12 +169,12 @@ def fig_chain():
 
     if not DECK:
         ax.text(-0.15, -0.45, "next 3 m: corr(last 3-month change upstream, next 3-month change downstream), no "
-            "overlap. same month: corr of monthly changes. Nov-2016 to Oct-2026. Thick r >= 0.6 · thin 0.4-0.6 · "
+            "overlap. same month: corr of monthly changes. Nov-2016 to Sep-2026. Thick r >= 0.6 · thin 0.4-0.6 · "
             "dashed < 0.4. Product arrows: width = share of material cost.",
             fontsize=7.5, color=MUTED)
     title(ax, "Production chain: which upstream moves help predict the next 3 months?",
                  fontsize=14, fontweight="bold", color=INK, loc="left", pad=6)
-    save(fig, "fig09_production_chain.png")
+    return fig
 
 
 def method_numbers():
@@ -214,9 +231,9 @@ def fig_method():
             fontsize=14, fontweight="bold", color=INK)
         ax.text(0.15, 0.1, "Same code path for every series; only the forecasting rule differs by type. "
             "The backtest picks the rule per series, so every choice is evidence-based.", fontsize=8, color=MUTED)
-    save(fig, "fig10_methodology.png")
+    return fig
 
 
 if __name__ == "__main__":
-    fig_chain()
-    fig_method()
+    save(fig_chain(), "fig09_production_chain.png")
+    save(fig_method(), "fig10_methodology.png")
