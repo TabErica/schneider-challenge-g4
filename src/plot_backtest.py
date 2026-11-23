@@ -21,7 +21,8 @@ GROUPS = [  # submitted targets only (targets.py); the epoxy inputs are in score
 ]
 if {s for _, ids in GROUPS for s in ids} != set(T.ids(in_submission=True)):
     raise ValueError("plot_backtest.GROUPS must list every submitted target of targets.py")
-MODELS = [("ets_local", "ETS\nper series"), ("ridge_local", "Ridge\nper series"), ("gbm_global", "GBM\none global model")]
+MODELS = [("ets_local+emp", "ETS (damped)"), ("auto_ets+emp", "AutoETS"), ("theta+emp", "Theta"),
+          ("combo_mean+emp", "mean(naive,\nAutoETS)"), ("gbm_global+native", "GBM\nglobal")]
 name = T.name
 
 rows = [s for _, ids in GROUPS for s in ids]
@@ -30,7 +31,7 @@ pv = per.pivot_table(index="series", columns=["model", "h"], values="rel_mae")
 M = np.array([[pv.at[s, c] for c in cols] for s in rows])
 
 cmap = LinearSegmentedColormap.from_list("div", [DIV_NEG, DIV_MID, DIV_POS])
-fig, ax = plt.subplots(figsize=(10, 7.6) if DECK else (10.5, 9.6))
+fig, ax = plt.subplots(figsize=(13, 7.6) if DECK else (14, 9.6))
 im = ax.imshow(M, cmap=cmap, norm=TwoSlopeNorm(vmin=0.7, vcenter=1.0, vmax=1.5), aspect="auto")
 ax.grid(False)
 ax.set_yticks(range(len(rows)), [name(s) for s in rows], fontsize=8.5)

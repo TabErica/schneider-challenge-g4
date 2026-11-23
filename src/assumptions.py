@@ -50,6 +50,25 @@ ASSUMPTIONS = [
      "nowcast stainless value). The PPI-proxy index is already 100 in Sep-2026 (factor 1). A constant changes no "
      "log change and no cost share. Factors in bom_rebase.csv; with --no-nowcast the market version keeps factor 1.",
      "backtest.Bom.rebase"),
+    ("A15", "model", "Backtest warm-up from Jan-2018: origins 2018-19 only build the residual history of the interval "
+     "layer; every score uses origins from Jan-2020. Point models need 12 months of history (statsforecast) or 24 "
+     "training rows (Ridge); GBM needs 50 rows.", "backtest.WARMUP_START, scoring.SCORE_START"),
+    ("A16", "model", "statsforecast models (AutoETS with damped trend allowed, AutoARIMA, Theta, OptimizedTheta) on "
+     "the log level with season_length = 1 (no seasonal terms on 40-120 points). Combinations: mean(naive, "
+     "AutoETS) and median(naive, AutoETS, Theta, AutoARIMA) of the P50 log returns.", "models/sf.py, models/combo.py"),
+    ("A17", "model", "lme_fwd: P50 = LME 3-month price at the origin (Westmetall monthly average; EUR version = "
+     "3-month USD / ECB spot rate, not a forward FX rate), flat for h = 6 and 9; the IMF / Westmetall cash basis "
+     "(< 1%) is not corrected.", "models/lme.py"),
+    ("A18", "interval", "Conformal bands (conf, aci, ewma) use only residuals published at the origin (outcome month + "
+     "data lag <= origin); at least 8 residuals, else the emp band (flag fallback). Finite-sample conformal ranks; "
+     "lower and upper bounds estimated separately. P10 <= P50 <= P90 enforced by clipping (Ridge / GBM native "
+     "quantiles are sorted, as in the first backtest).", "models/intervals.py"),
+    ("A19", "interval", "ACI: target 80%, delayed feedback (an outcome updates alpha when it is published). One gamma "
+     "per point model (horizons and targets pooled) from {0, 0.005, 0.01, 0.02, 0.05}, chosen on warm-up bands only "
+     "(outcomes published by Jan-2020, ACI active); 0.005 if fewer than 200 such bands. h = 9 has almost no active "
+     "warm-up bands, so the choice rests on h = 3 and 6.", "models/intervals.py"),
+    ("A20", "interval", "EWMA volatility: lambda = 0.9 on squared monthly log changes known at the origin; residuals "
+     "standardised by sigma x sqrt(h_eff).", "models/intervals.EWMA_LAMBDA"),
 ]
 
 

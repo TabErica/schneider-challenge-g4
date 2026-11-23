@@ -1,14 +1,22 @@
 """Rolling-origin backtest at 3 / 6 / 9 months -> outputs/backtest/.
 
-Targets come from targets.py. At every origin t the panel is cut with preprocess.as_of(): each series loses the same
-number of months it lacks at the real origin (Sep-2026), so stainless 304 always ends at t - 1. By default (also for
-the submission) that missing month is nowcast (preprocess.nowcast: nickel + EU steel PPI), so every target is known
-at t. Every model forecasts log(y[t+h] / y[a]) with P10/P50/P90, where a = the target's last month known at t; the
-effective horizon is h_eff = h + (t - a) (h, or h + 1 for stainless 304 and the market-price BOM with --no-nowcast).
-The BOM indices are rebuilt at every origin from the cut panel, so they inherit the ragged edge of their inputs, and
-are rescaled so that the run's origin month = 100 (bom_rebase.csv).
-Univariate models (naive, drift, ETS) use each target's full history; Ridge and the global GBM use the months where
-every input is known. No forward fill anywhere.
+Targets come from targets.py, models from models/ (one interface, models/base.py). At every origin t the panel is cut
+with preprocess.as_of(): each series loses the same number of months it lacks at the real origin (Sep-2026), so
+stainless 304 always ends at t - 1. By default (also for the submission) that missing month is nowcast
+(preprocess.nowcast: nickel + EU steel PPI), so every target is known at t. Every model forecasts
+log(y[t+h] / y[a]), where a = the target's last month known at t; the effective horizon is h_eff = h + (t - a)
+(h, or h + 1 for stainless 304 and the market-price BOM with --no-nowcast). The BOM indices are rebuilt at every
+origin from the cut panel, so they inherit the ragged edge of their inputs, and are rescaled so that the run's
+origin month = 100 (bom_rebase.csv).
+
+Two passes:
+  1. point pass, origins WARMUP_START..origin: every model of models.make_registry() gives its P50 (Ridge and GBM
+     also their own P10 / P90). Univariate models use each target's full history; Ridge / GBM the months where every
+     input is known.
+  2. interval layer (models/intervals.py): emp / conf / aci / ewma bands around every point model, from the
+     residuals already published at each origin. The warm-up origins (2018-19) only build that residual history:
+     scores (scoring.py) use origins >= SCORE_START (2020-01).
+No forward fill anywhere.
 
     python backtest.py [--origin 2026-09] [--no-nowcast] [--drop-provisional] [--bom-weights base|origin]
 
@@ -17,6 +25,7 @@ every input is known. No forward fill anywhere.
 --no-nowcast        sensitivity: no stainless nowcast; stainless 304 and the market-price BOM forecast from t - 1 (h + 1).
 --drop-provisional  sensitivity: remove the last 2 months of the Eurostat PPIs at every origin (their h_eff = h + 2).
 --bom-weights       base = Sep-2026 cost shares (submission, default); origin = shares from prices known at each origin.
+--models            comma-separated point models (default: all of models.make_registry(); naive is always run).
 Non-default options write to outputs/backtest/<tag>/ so the baseline is never overwritten.
 """
 from __future__ import annotations
@@ -24,61 +33,29 @@ from __future__ import annotations
 import argparse
 import time
 import warnings
+from collections import defaultdict
 
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import HistGradientBoostingRegressor
-from sklearn.linear_model import Ridge
-from sklearn.pipeline import make_pipeline
-from sklearn.preprocessing import StandardScaler
-from statsmodels.tsa.holtwinters import ExponentialSmoothing
 
 import data as D
+import models
 import preprocess as P
+import scoring
 import targets as T
+from models import intervals
+from models.base import HORIZONS, Context, empirical_spread, months
+from models.lme import quote_basis
 
 warnings.filterwarnings("ignore")
 OUT = D.OUT / "backtest"
 
-HORIZONS = (3, 6, 9)
-QS = (0.1, 0.5, 0.9)
-FIRST_ORIGIN = pd.Timestamp("2020-01-01")
+WARMUP_START = pd.Timestamp("2018-01-01")  # residual history for the interval layer; not scored
+SCORE_START = scoring.SCORE_START  # first scored origin (2020-01)
+FIRST_ORIGIN = SCORE_START
 TARGET_IDS = T.ids()
 BOM_IDS = T.ids("bom_index")
 MATERIAL_IDS = T.ids("material")
-DRIVER_IDS = ["ED01", "ED02", "E09", "S04", "S03", "S01", "S06"]
-FAMILY = {t.id: t.family for t in T.REGISTRY}
-GBM_REFIT_EVERY = 3  # months
-
-
-def months(a, b):
-    """Whole months from a to b."""
-    return (b.to_period("M") - a.to_period("M")).n
-
-
-def build_features(p):
-    """(month, series) frame of features known at month t."""
-    L = np.log(p[list(dict.fromkeys(TARGET_IDS + DRIVER_IDS))])
-    drv = pd.DataFrame({f"drv_{d}_r{k}": L[d].diff(k) for d in DRIVER_IDS for k in (1, 3)})
-    fam_code = {f: i for i, f in enumerate(sorted(set(FAMILY.values())))}
-    frames = []
-    for s in TARGET_IDS:
-        x = pd.DataFrame({f"r{k}": L[s].diff(k) for k in (1, 3, 6, 12)})
-        x["dev12"] = L[s] - L[s].rolling(12).mean()
-        x["vol12"] = L[s].diff().rolling(12).std()
-        x = x.join(drv)
-        x["family"] = fam_code[FAMILY[s]]
-        x["series"] = s
-        frames.append(x)
-    return pd.concat(frames).set_index("series", append=True).sort_index()
-
-
-def empirical_spread(hist_ret):
-    """P10 / P90 of past h-month log-returns, centred on their median."""
-    r = hist_ret.dropna()
-    if len(r) < 12:
-        return -0.1, 0.1
-    return r.quantile(0.1) - r.median(), r.quantile(0.9) - r.median()
 
 
 class Bom:
@@ -122,10 +99,14 @@ def check_history(full):
             raise ValueError(f"{t.id}: registry history_start {t.history_start}, data starts {first}")
 
 
-def run(origin=P.CUTOFF, nowcast=True, drop_provisional=False, bom_weights="base"):
-    """Predictions for every origin FIRST_ORIGIN..origin and horizon, the nowcast log and the BOM rebase factors.
-    Rows are kept when the outcome is known as of `origin`, and always at `origin` itself (the forecast)."""
+def run(origin=P.CUTOFF, nowcast=True, drop_provisional=False, bom_weights="base", model_names=None):
+    """Point pass over origins WARMUP_START..origin, then the interval layer. Rows are kept when the outcome is known
+    as of `origin`, and always at `origin` itself (the forecast). Returns (predictions of the scored origins, nowcast
+    log, BOM rebase factors, ACI gamma table, runtime table). model_names: run only these point models (naive is
+    always kept as the reference)."""
     t0, origin = time.time(), pd.Timestamp(origin)
+    if origin < SCORE_START:
+        raise ValueError(f"origin must be >= {SCORE_START:%Y-%m}")
     cut = P.load()  # full history, cut at the data cutoff (Sep-2026)
     lags = P.relative_lags(cut)
     bom = Bom(cut, bom_weights)
@@ -134,9 +115,21 @@ def run(origin=P.CUTOFF, nowcast=True, drop_provisional=False, bom_weights="base
     rebase = base.rebase(P.nowcast(full, origin)[0] if nowcast else full, origin)  # origin month = 100
     full = full.join(base.columns(full, base.base_costs, base.base_refs))
     check_history(full)
+    # months after its date that an outcome is published (the residual of origin j is usable at t >= target + lag)
+    seen = P.as_of(cut, origin, lags, drop_provisional=drop_provisional)
+    seen = seen.join(base.columns(seen, base.base_costs, base.base_refs))
+    data_lag = {s: months(seen[s].last_valid_index(), origin) for s in TARGET_IDS}
 
-    rows, nowlog, gbm, last_fit = [], [], {}, {}
-    for t in pd.date_range(FIRST_ORIGIN, origin, freq="MS"):
+    registry = models.make_registry()
+    if model_names:
+        keep = set(model_names) | {"naive"}
+        unknown = keep - {m.name for m in registry}
+        if unknown:
+            raise ValueError(f"unknown models {sorted(unknown)}")
+        registry = [m for m in registry if m.name in keep]
+    clock = defaultdict(float)
+    rows, nowlog = [], []
+    for t in pd.date_range(WARMUP_START, origin, freq="MS"):
         pt = P.as_of(cut, t, lags, drop_provisional=drop_provisional)
         if nowcast:
             pt, nl = P.nowcast(pt, t)
@@ -146,112 +139,78 @@ def run(origin=P.CUTOFF, nowcast=True, drop_provisional=False, bom_weights="base
         # outcomes, with the same BOM weights as the inputs (data as of `origin`, never later)
         actual = full if bom_weights == "base" else full[MATERIAL_IDS].join(bom.columns(full, costs, refs))
         prov = P.provisional_months(pt)
-        X = build_features(pt)
-        cols = list(X.columns)
-        L = np.log(pt[TARGET_IDS])
-        anchor = {s: pt[s].last_valid_index() for s in TARGET_IDS}
-        lag = {s: months(anchor[s], t) for s in TARGET_IDS}
-
-        for h in HORIZONS:
-            if h not in gbm or months(last_fit[h], t) >= GBM_REFIT_EVERY:
-                # every (month, series) whose h_eff-month outcome is known at t
-                ytr = pd.concat({s: (L[s].shift(-(h + lag[s])) - L[s]) for s in TARGET_IDS}, axis=1).stack()
-                Xtr = X.reindex(ytr.index)
-                ok = ytr.notna() & Xtr.notna().all(axis=1)
-                gbm[h] = {q: HistGradientBoostingRegressor(
-                    loss="quantile", quantile=q, max_iter=150, learning_rate=0.05, max_depth=3,
-                    min_samples_leaf=20, categorical_features=[cols.index("family")], random_state=0,
-                ).fit(Xtr[ok].values, ytr[ok].values) for q in QS}
-                gbm[h]["n"], last_fit[h] = int(ok.sum()), t
+        ctx = Context(t, pt)
+        for m in registry:
+            c = time.perf_counter()
+            m.prepare(ctx)
+            clock[m.name] += time.perf_counter() - c
 
         for s in TARGET_IDS:
-            a = anchor[s]
-            hist = L[s].loc[:a].dropna()
-            y_a = pt.at[a, s]
-            try:
-                ets = ExponentialSmoothing(hist.values, trend="add", damped_trend=True,
-                                           initialization_method="estimated").fit()
-                ets_path = ets.forecast(max(HORIZONS) + lag[s])
-            except Exception:
-                ets_path = None
-            xs = X.xs(s, level="series").loc[:a].drop(columns=["family"])
-            xa = X.loc[(a, s)].drop("family").values.reshape(1, -1).astype(float)
-
+            a, hist, y_a = ctx.anchor[s], ctx.hist(s), ctx.y_a(s)
+            preds = {}
+            for m in registry:
+                if m.applies(s):
+                    c = time.perf_counter()
+                    preds[m.name] = m.predict(ctx, s)
+                    clock[m.name] += time.perf_counter() - c
+                    ctx.q50[m.name, s] = {h: p.q50 for h, p in preds[m.name].items()}
+            sigma = intervals.ewma_sigma(hist)
+            lv = pt[s].loc[:a]
             for h in HORIZONS:
                 target = t + pd.DateOffset(months=h)
                 y_true = actual.at[target, s] if target in actual.index else np.nan
                 if pd.isna(y_true) and t != origin:
                     continue
-                he = h + lag[s]
-                ys = L[s].shift(-he) - L[s]  # h_eff-month log changes known at t
-                lo, hi = empirical_spread(ys)
-                preds = {"naive": ((lo, 0.0, hi), len(hist))}
-                drift = hist.diff().tail(36).mean() * he
-                preds["drift"] = ((drift + lo, drift, drift + hi), len(hist))
-                e = float(ets_path[he - 1] - np.log(y_a)) if ets_path is not None else 0.0
-                preds["ets_local"] = ((e + lo, e, e + hi), len(hist))
-                yy = ys.reindex(xs.index)
-                ok = yy.notna() & xs.notna().all(axis=1)
-                if ok.sum() >= 24 and np.isfinite(xa).all():
-                    rg = make_pipeline(StandardScaler(), Ridge(alpha=10.0)).fit(xs[ok].values, yy[ok].values)
-                    res = yy[ok].values - rg.predict(xs[ok].values)
-                    mu = float(rg.predict(xa)[0])
-                    preds["ridge_local"] = ((mu + np.quantile(res, 0.1), mu, mu + np.quantile(res, 0.9)), int(ok.sum()))
-                xg = X.loc[[(a, s)], cols].values
-                if np.isfinite(np.delete(xg, cols.index("family"), axis=1)).all():
-                    preds["gbm_global"] = (tuple(float(gbm[h][q].predict(xg)[0]) for q in QS), gbm[h]["n"])
-
-                for name, (q, n_train) in preds.items():
-                    q10, q50, q90 = np.sort(q)
-                    rows.append({"model": name, "series": s, "h": h, "h_eff": he, "origin": t, "anchor": a,
-                                 "y_t": y_a, "actual": y_true, "p10": y_a * np.exp(q10), "p50": y_a * np.exp(q50),
-                                 "p90": y_a * np.exp(q90), "n_train": n_train,
-                                 "anchor_provisional": a in prov.get(s, [])})
+                he = ctx.h_eff(s, h)
+                lo, hi = empirical_spread(ctx.ys(s, he))
+                meta = {"series": s, "h": h, "h_eff": he, "origin": t, "anchor": a, "y_t": y_a, "actual": y_true,
+                        "anchor_provisional": a in prov.get(s, []), "emp_lo": lo, "emp_hi": hi, "sigma": sigma,
+                        "mase_scale": (lv.shift(-he) - lv).abs().mean(),
+                        "reveal": target + pd.DateOffset(months=data_lag[s])}
+                for name, ph in preds.items():
+                    if h in ph:
+                        p = ph[h]
+                        rows.append(meta | {"point": name, "q50": p.q50, "q10n": p.q10, "q90n": p.q90,
+                                            "n_train": p.n_train})
         if t.month == 1 or t == origin:
             print(f"  origin {t:%Y-%m} ({time.time() - t0:.0f}s)", flush=True)
-    return pd.DataFrame(rows), pd.DataFrame(nowlog), rebase
+
+    pts = pd.DataFrame(rows)
+    pts["r"] = np.log(pts["actual"] / pts["y_t"])
+    bands, gamma, iclock = intervals.apply(pts, warm_end=SCORE_START)
+    native = pts[pts["q10n"].notna()].assign(interval="native", q10=lambda d: d["q10n"], q90=lambda d: d["q90n"],
+                                             fallback=False)
+    meta_cols = ["point", "series", "h", "origin", "h_eff", "anchor", "y_t", "actual", "n_train",
+                 "anchor_provisional", "mase_scale"]
+    res = pd.concat([bands.merge(pts[meta_cols], on=["point", "series", "h", "origin"]),
+                     native[meta_cols + ["interval", "q10", "q50", "q90", "fallback"]]], ignore_index=True)
+    res = res[res["origin"] >= SCORE_START]
+    for q in ("10", "50", "90"):
+        res[f"p{q}"] = res["y_t"] * np.exp(res[f"q{q}"])
+    res.insert(0, "model", res["point"] + "+" + res["interval"])
+    res = res.sort_values(["model", "series", "h", "origin"]).reset_index(drop=True)
+    runtime = pd.DataFrame([{"kind": "point model", "name": k, "seconds": v} for k, v in clock.items()]
+                           + [{"kind": "interval method", "name": k, "seconds": v} for k, v in iclock.items()])
+    runtime["origins"] = len(pd.date_range(WARMUP_START, origin, freq="MS"))
+    print(f"  done ({time.time() - t0:.0f}s)", flush=True)
+    return res, pd.DataFrame(nowlog), rebase, gamma, runtime
 
 
 def score(res, save_dir=None):
-    """Per-series and summary scores on the rows whose outcome is known."""
-    r = res[res["actual"].notna()].copy()
-    r["ae"] = (r["p50"] - r["actual"]).abs()
-    r["ape"] = r["ae"] / r["actual"]
-    r["covered"] = (r["actual"] >= r["p10"]) & (r["actual"] <= r["p90"])
-    r["pinball"] = sum(np.maximum(q * (r["actual"] - r[f"p{int(q * 100)}"]), (q - 1) * (r["actual"] - r[f"p{int(q * 100)}"]))
-                       for q in QS) / 3 / r["actual"]
-    naive_ae = r[r.model == "naive"].set_index(["series", "h", "origin"])["ae"]
-    r["naive_ae"] = naive_ae.reindex(pd.MultiIndex.from_frame(r[["series", "h", "origin"]])).values
-    per = r.groupby(["model", "series", "h"]).agg(
-        mape=("ape", "mean"), mae=("ae", "mean"), naive_mae=("naive_ae", "mean"),
-        coverage80=("covered", "mean"), pinball=("pinball", "mean"), n=("ape", "size"),
-        h_eff=("h_eff", "max"), n_train_first=("n_train", "first"), n_train_last=("n_train", "last")).reset_index()
-    per["rel_mae"] = per["mae"] / per["naive_mae"]
-    per["in_submission"] = per["series"].map(lambda s: T.BY_ID[s].in_submission)
-    summ = summarise(per[per.in_submission])
-    if save_dir is not None:
-        per.to_csv(save_dir / "scores_per_series.csv", index=False, float_format="%.4f")
-        summ.to_csv(save_dir / "scores_summary.csv", index=False, float_format="%.4f")
-    return per, summ
-
-
-def summarise(per):
-    return per.groupby(["model", "h"]).agg(
-        mean_mape=("mape", "mean"), median_rel_mae=("rel_mae", "median"),
-        series_beating_naive=("rel_mae", lambda x: int((x < 0.97).sum())),
-        coverage80=("coverage80", "mean"), pinball=("pinball", "mean"), n_series=("series", "nunique")).reset_index()
+    """See scoring.py. Returns (per series, summary, family x period, best per family)."""
+    return scoring.score(res, save_dir)
 
 
 def training_samples(res, origin):
     """Per target (h = 3): months of history for the univariate models at the first and last origin, and Ridge
     training rows (window where every input is known) at the first origin Ridge could run and at the last one."""
     r = res.sort_values("origin")
-    nv = r[(r.model == "naive") & (r.h == 3)].groupby("series")
-    rg = r[(r.model == "ridge_local") & (r.h == 3)].groupby("series")
+    nv = r[(r.model == "naive+emp") & (r.h == 3)].groupby("series")
+    rg = r[(r.model == "ridge_local+native") & (r.h == 3)].groupby("series")
     out = pd.DataFrame({
         "history_start": {t.id: t.history_start for t in T.REGISTRY},
         "relative_lag_m": (r["h_eff"] - r["h"]).groupby(r["series"]).max(),
-        f"n_hist_{FIRST_ORIGIN:%Y-%m}": nv["n_train"].first(), f"n_hist_{origin:%Y-%m}": nv["n_train"].last(),
+        f"n_hist_{SCORE_START:%Y-%m}": nv["n_train"].first(), f"n_hist_{origin:%Y-%m}": nv["n_train"].last(),
         "ridge_first_origin": rg["origin"].first().dt.strftime("%Y-%m"), "n_ridge_first": rg["n_train"].first(),
         f"n_ridge_{origin:%Y-%m}": rg["n_train"].last(),
     })
@@ -293,28 +252,62 @@ def main(argv=None):
     ap.add_argument("--no-nowcast", action="store_true")
     ap.add_argument("--drop-provisional", action="store_true")
     ap.add_argument("--bom-weights", default="base", choices=["base", "origin"])
+    ap.add_argument("--models", default="", help="comma-separated point models to run (default: all)")
     a = ap.parse_args(argv)
     origin = pd.Timestamp(a.origin)
     nowcast = not a.no_nowcast
     d = out_dir(origin, nowcast, a.drop_provisional, a.bom_weights)
     print(f"backtest -> {d.relative_to(D.ROOT)}")
-    res, nowlog, rebase = run(origin, nowcast, a.drop_provisional, a.bom_weights)
+    res, nowlog, rebase, gamma, runtime = run(origin, nowcast, a.drop_provisional, a.bom_weights,
+                                              [m for m in a.models.split(",") if m])
     rebase.to_csv(d / "bom_rebase.csv", float_format="%.6f")
+    gamma.to_csv(d / "aci_gamma.csv", index=False, float_format="%.4f")
+    runtime.to_csv(d / "runtime.csv", index=False, float_format="%.2f")
     res.to_csv(d / "backtest_predictions.csv", index=False)
     res[res.origin == origin].to_csv(d / "forecasts_at_origin.csv", index=False)
     if len(nowlog):
         nowlog.to_csv(d / "nowcast_log.csv", index=False)
     training_samples(res, origin).to_csv(d / "training_samples.csv")
-    per, summ = score(res, d)
+    qb = quote_basis(P.as_of(P.load(), origin), origin, {"all": (None, None), "2020-": (SCORE_START, None)})
+    qb.to_csv(d / "quote_basis.csv", index=False, float_format="%.4f")
+    per, summ, fam, best = score(res, d)
     if origin < P.CUTOFF:
         hc = holdout_check(res, origin, a.bom_weights, rebase)
         hc.to_csv(d / "holdout_check.csv", index=False, float_format="%.4f")
-        print("held-back check (outcomes after the origin):")
-        print(hc.groupby(["model", "h"]).agg(mae_pct=("error", lambda x: x.abs().mean()),
-                                             naive_mae_pct=("naive_error", lambda x: x.abs().mean()),
-                                             coverage80=("covered", "mean"), n=("error", "size")).round(3).to_string())
-    print(summ.pivot(index="model", columns="h", values=["median_rel_mae", "coverage80"]).round(3).to_string())
+        print("held-back check (outcomes after the origin), P50 error by point model and 80% coverage by band:")
+        e = hc[hc.model.str.endswith("+emp")]
+        print(e.groupby(["model", "h"]).agg(mae_pct=("error", lambda x: x.abs().mean()),
+                                            naive_mae_pct=("naive_error", lambda x: x.abs().mean()),
+                                            n=("error", "size")).round(3).to_string())
+        print(hc.assign(interval=hc.model.str.split("+").str[1]).groupby(["interval", "h"])["covered"]
+              .mean().round(3).to_string())
+    print_compact(best, gamma)
+    if "lme_fwd+emp" in set(per["model"]):
+        print_lme(per, qb)
     return res, per, summ
+
+
+def print_lme(per, qb):
+    """LME 3-month price as P50 vs naive on its 4 targets, and the quote-basis table (origins 2020-01+)."""
+    p = per[per["model"].isin(["lme_fwd+emp", "naive+emp"])]
+    print("\nlme_fwd vs naive (rel. MAE, DM stat / p), origins 2020-01+:")
+    print(p[p.model == "lme_fwd+emp"].pivot_table(index="series", columns="h",
+                                                   values=["rel_mae", "dm_stat", "dm_p"]).round(3).to_string())
+    q = qb[qb["period"] == "2020-"].pivot_table(index=["metal", "currency", "h"], columns="basis",
+                                                 values=["bias", "mae"])
+    print("\nQuote basis: cash vs 3-month LME price at the origin as forecast of the cash average h months later "
+          "(pred / actual - 1), origins 2020-01+:")
+    print(q.round(4).to_string())
+
+
+def print_compact(best, gamma):
+    pd.set_option("display.width", 220)
+    print("\nACI gamma per point model (all horizons pooled, from the warm-up window only):")
+    print(gamma[gamma.chosen][["point", "gamma", "coverage", "width", "n", "rule"]].round(3).to_string(index=False))
+    print("\nBest point model (lowest mean MASE) and band (coverage within 3 pts of 80%, narrowest), origins 2020-01+:")
+    cols = ["family", "h", "n_series", "best_point", "mase", "naive_mase", "median_rel_mae", "dm_better",
+            "best_band", "coverage80", "above", "below", "width", "winkler"]
+    print(best[cols].round(3).to_string(index=False))
 
 
 if __name__ == "__main__":

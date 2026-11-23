@@ -33,7 +33,7 @@ The environment is managed with [uv](https://docs.astral.sh/uv/). `pyproject.tom
 curl -LsSf https://astral.sh/uv/install.sh | sh     # or: brew install uv
 
 uv sync                         # creates .venv/ with the exact locked versions (downloads Python 3.12 if needed)
-uv run python main.py                   # everything, origin Sep-2026: ~2 min with cached sensitivity, ~8 min without
+uv run python main.py                   # everything, origin Sep-2026: ~9 min (backtest ~7 min) with cached sensitivity
 uv run python main.py --skip-sensitivity  # skip the sensitivity variants; --skip-backtest also reuses the baseline
 uv run python main.py --origin 2026-06  # held-back check: forecasting path only, data as of Jun-2026
 uv run python src/preprocess.py         # any single step
@@ -75,8 +75,9 @@ nbstripout also clears the outputs in your local copy, so run the notebook again
 
 Outputs: `outputs/assumptions.csv` (every modelling assumption, see below), `outputs/preprocessed/` (clean panel,
 series catalog with relative lags and provisional months, transformation log), `outputs/eda/` (charts, tables) and
-`outputs/backtest/` (predictions, forecasts at the origin, scores, training sizes, `sensitivity.csv`; one sub-folder
-per sensitivity variant or held-back origin).
+`outputs/backtest/` (predictions of every `point+interval` label, forecasts at the origin, scores per series /
+summary / family × period, `best_by_family.csv`, `quote_basis.csv`, `aci_gamma.csv`, `runtime.csv`, training sizes,
+`sensitivity.csv`; one sub-folder per sensitivity variant or held-back origin).
 `DECK=1` renders charts in slide style to `outputs/slides/`. Colours: **RM6 green `#16884A`, RM AirSeT blue `#3478B8`**.
 
 | File | Role |
@@ -89,7 +90,9 @@ per sensitivity variant or held-back origin).
 | `src/eda.py` | Price families, key material prices, BOM cost index and cost per unit, cost structure, volatility by horizon, price benchmark (figures and the tables behind them) |
 | `src/eda_risk.py` | Risk EDA: unit roots, fat tails, volatility clustering, band coverage, cost-index rises (3/6/9 m) and their drivers, regimes, correlations (fig11–fig15, `risk_*.csv`) |
 | `notebooks/02_eda_risk.ipynb` | Conclusions of the EDA: risk (§1–4), key prices, cost per unit, risk by horizon, supply-chain links, selling-price benchmark (§5–9) |
-| `src/backtest.py` | Rolling backtest Jan-2020 → origin: naive, drift, ETS, Ridge, global GBM; P10/P50/P90; data as of each origin (`as_of`); BOM indices rescaled to origin = 100; options `--origin`, `--no-nowcast`, `--drop-provisional`, `--bom-weights` |
+| `src/backtest.py` | Rolling backtest, warm-up Jan-2018, scored Jan-2020 → origin: loops over the model registry (point pass), then the interval layer; data as of each origin (`as_of`); BOM indices rescaled to origin = 100; options `--origin`, `--no-nowcast`, `--drop-provisional`, `--bom-weights`, `--models` |
+| `src/models/` | One interface (`base.py`: origin context in, log-return quantiles out). `classic.py` naive / drift / damped ETS / Ridge / global GBM (the first backtest, unchanged); `sf.py` AutoETS, AutoARIMA, Theta, OptimizedTheta (statsforecast); `combo.py` mean(naive, AutoETS), median(naive, AutoETS, Theta, AutoARIMA); `lme.py` LME 3-month price as P50 + quote-basis table; `intervals.py` emp / split conformal / ACI / EWMA-scaled bands around any point model |
+| `src/scoring.py` | Scores: rel. MAE, MASE, pinball, coverage (above / below), width, Winkler, Diebold-Mariano vs naive; by family × period (2020-21, 2022, 2023-26); best point model and band per family × horizon |
 | `src/sensitivity.py` | Backtest variants against the baseline (no nowcast, provisional dropped, origin BOM weights) → `sensitivity.csv`; a variant is re-run only when its inputs change (cache key) |
 | `src/plot_backtest.py` | Error relative to naive per series / model / horizon |
 | `src/diagrams.py` | Production chain (predictive links, `link_table`) and methodology diagrams |
@@ -135,6 +138,37 @@ per sensitivity variant or held-back origin).
 - **Held-back origin Jun-2026** (3 months → Sep-2026, 22 series with a Sep-2026 outcome): every model is within ±1
   point of naive's 6.3% error; 80% coverage 77–91% on this single, calm quarter (too few points to rank models).
 
+### Univariate baselines and calibrated bands (22 submitted targets, origins Jan-2020 → Sep-2026)
+
+- **Refactor checked**: the five first-backtest models, moved to `src/models/`, give exactly the same P10 / P50 / P90
+  on every row (`naive` = `naive+emp`, ..., `gbm_global` = `gbm_global+native`).
+- **P50: nothing significantly beats naive.** Diebold-Mariano (absolute errors, Newey-West lag h - 1): at most one
+  target per model and horizon is significantly better than naive; Theta / OptimizedTheta are significantly *worse*
+  on 7–9 targets, the global GBM on 15 at 9 months.
+  - Best mean MASE per family × horizon (`best_by_family.csv`): damped ETS at 3 months, mean(naive, AutoETS) at
+    6 months, naive at 9 months in most families. Gains over naive are 0–11% in MASE.
+  - AutoETS picks a random walk on most exchange-traded prices (rel. MAE exactly 1.00). The mean(naive, AutoETS)
+    combination is the steadiest: rel. MAE 0.88–0.98 on the EU steel / aluminium / plastics PPIs and the PPI-proxy
+    BOM (aluminium PPI 1.02 at 9 months).
+  - **LME 3-month price as P50** (D01, D02, S01, S02): rel. MAE 0.97–1.01, only S02 at 6 months significant
+    (p = 0.03). **Quote basis**: the 3-month price beats cash as the forecast of future cash by 0–0.4 MAE points
+    (copper in EUR at 6 months is the one case where cash is slightly better) and has less bias (e.g. aluminium,
+    3 months: −0.9% vs −1.7%). Both under-forecast in 2020-26 (copper −2.6% to −8.5%), because prices rose.
+- **Bands: conformal fixes the average, not the regimes.** Mean 80% coverage over all point models
+  (3 / 6 / 9 months): emp 67 / 65 / 62%, split conformal 74 / 73 / 67%, ACI 79 / 77 / 72%, EWMA-scaled
+  82 / 78 / 76%.
+  - Misses stay lopsided (above P90 12–17%, below P10 8–12% with ACI).
+  - The Winkler score still prefers the narrow emp band at 6–9 months, because the wider conformal bands pay for
+    their width.
+  - By period: on steel, ACI around damped ETS covers 50–61% in 2020-21 and 96–100% in 2023-26. The 80% average
+    hides a band that is too narrow in the rally and too wide afterwards.
+- ACI gamma per point model from the 2018-19 warm-up only (`aci_gamma.csv`). Ridge, GBM and lme_fwd have too few
+  warm-up bands and use the default 0.005.
+- **Held-back Jun-2026** (3 months, 22 targets): every point model is within 1 point of naive's 6.3% error
+  (AutoARIMA 5.4%); coverage emp 86%, conf 91%, ACI 91%, EWMA 95% on this one calm quarter.
+- Runtime of a full backtest, 105 origins (`runtime.csv`): AutoARIMA 244 s, GBM 114 s, damped ETS 13 s,
+  Ridge 12 s, AutoETS 9 s, Theta about 1 s; the whole interval layer < 1 s.
+
 ## Next steps
 
 1. Forecast CSV `<team>_forecast_202609.csv`: per-series model choice by backtest, calibrated intervals (wider,
@@ -167,6 +201,12 @@ derive, fx, ragged_edge, provisional).
 | A12 | BOM | Fixed quantities (kg per unit) over the whole period: no design or sourcing change. | `data.load_bom` |
 | A13 | data | ECH and epoxy May-2026 are a decimal-shift typo: set to NaN, then log-linear interpolation. | `preprocess.CORRECTIONS` |
 | A14 | BOM | Submitted BOM indices are scaled so that the origin month = 100 (format 'index (origin = 100)'): one constant per index, from its value in the origin month as seen at the origin (market version: with the nowcast stainless value). The PPI-proxy index is already 100 in Sep-2026 (factor 1). A constant changes no log change and no cost share. Factors in bom_rebase.csv; with --no-nowcast the market version keeps factor 1. | `backtest.Bom.rebase` |
+| A15 | model | Backtest warm-up from Jan-2018: origins 2018-19 only build the residual history of the interval layer; every score uses origins from Jan-2020. Point models need 12 months of history (statsforecast) or 24 training rows (Ridge); GBM needs 50 rows. | `backtest.WARMUP_START, scoring.SCORE_START` |
+| A16 | model | statsforecast models (AutoETS with damped trend allowed, AutoARIMA, Theta, OptimizedTheta) on the log level with season_length = 1 (no seasonal terms on 40-120 points). Combinations: mean(naive, AutoETS) and median(naive, AutoETS, Theta, AutoARIMA) of the P50 log returns. | `models/sf.py, models/combo.py` |
+| A17 | model | lme_fwd: P50 = LME 3-month price at the origin (Westmetall monthly average; EUR version = 3-month USD / ECB spot rate, not a forward FX rate), flat for h = 6 and 9; the IMF / Westmetall cash basis (< 1%) is not corrected. | `models/lme.py` |
+| A18 | interval | Conformal bands (conf, aci, ewma) use only residuals published at the origin (outcome month + data lag <= origin); at least 8 residuals, else the emp band (flag fallback). Finite-sample conformal ranks; lower and upper bounds estimated separately. P10 <= P50 <= P90 enforced by clipping (Ridge / GBM native quantiles are sorted, as in the first backtest). | `models/intervals.py` |
+| A19 | interval | ACI: target 80%, delayed feedback (an outcome updates alpha when it is published). One gamma per point model (horizons and targets pooled) from {0, 0.005, 0.01, 0.02, 0.05}, chosen on warm-up bands only (outcomes published by Jan-2020, ACI active); 0.005 if fewer than 200 such bands. h = 9 has almost no active warm-up bands, so the choice rests on h = 3 and 6. | `models/intervals.py` |
+| A20 | interval | EWMA volatility: lambda = 0.9 on squared monthly log changes known at the origin; residuals standardised by sigma x sqrt(h_eff). | `models/intervals.EWMA_LAMBDA` |
 
 Limits:
 - BOM from the standalone `RM_Prices_XHEC_Challenge.xlsx`; the older BOM in `data.zip` (`bom_materials.csv`) is not used.

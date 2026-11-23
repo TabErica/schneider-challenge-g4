@@ -179,7 +179,7 @@ def fig_chain():
 
 def method_numbers():
     per = pd.read_csv(D.OUT / "backtest" / "scores_per_series.csv")
-    e3 = per[(per.model == "ets_local") & (per.h == 3)].set_index("series")["rel_mae"]
+    e3 = per[(per.model == "ets_local+emp") & (per.h == 3)].set_index("series")["rel_mae"]
     win = e3[["S08", "S09", "S10", "RMAirSeT_IIQ_24kV"]]
     ahead = [r for kind, r in measured_links().values() if kind == "ahead" and r >= 0.4]
     return 1 - win.max(), 1 - win.min(), min(ahead), max(ahead)
