@@ -4,12 +4,13 @@ make_registry() returns fresh instances in run order: combinations read the P50 
 """
 from __future__ import annotations
 
-from models import classic, combo, lme, sf
+from models import classic, combo, lme, multi, sf
 
 
 def make_registry():
+    # multi after combo: epoxy_struct reads the combo_mean forecasts of its inputs
     return ([classic.Naive(), classic.Drift(), classic.EtsLocal(), classic.RidgeLocal(), classic.GbmGlobal()]
-            + sf.models() + combo.models() + lme.models())
+            + sf.models() + combo.models() + lme.models() + multi.models())
 
 
 LEGACY = {  # first-backtest model name -> label in the new backtest (identical forecasts)

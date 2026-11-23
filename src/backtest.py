@@ -284,6 +284,8 @@ def main(argv=None):
     print_compact(best, gamma)
     if "lme_fwd+emp" in set(per["model"]):
         print_lme(per, qb)
+    if set(per["point"]) & set(models.multi.NAMES):
+        models.multi.write_reports(res, d)
     return res, per, summ
 
 

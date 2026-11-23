@@ -69,6 +69,40 @@ ASSUMPTIONS = [
      "warm-up bands, so the choice rests on h = 3 and 6.", "models/intervals.py"),
     ("A20", "interval", "EWMA volatility: lambda = 0.9 on squared monthly log changes known at the origin; residuals "
      "standardised by sigma x sqrt(h_eff).", "models/intervals.EWMA_LAMBDA"),
+    ("A21", "features", "Family models use 1-4 leading indicators per target, each with an economic reason (steel PPI "
+     "<- CRU CR coil this and last month + iron ore; CRU coil <- iron ore, coal, TTF (+ zinc for HDG); stainless <- "
+     "nickel this and last month; plastics PPI <- Brent 3-month change; aluminium PPI <- LME aluminium, TTF, power; "
+     "LME copper / aluminium <- 3-month / cash basis and stock change, + TTF and power for aluminium), plus the "
+     "target's own 1- and 3-month changes. Every feature at month m uses data up to m only; the leakage test rebuilds "
+     "every design row at every origin 2018-01..2026-09 from the panel as seen at the origin and requires it to equal "
+     "the full-panel row. Separate USD price x EUR/USD forecasts (optional in the plan) are not built.",
+     "features.py (feature_availability.csv)"),
+    ("A22", "model", "ardl / ridge_fam: one direct regression per target and horizon on the months whose h_eff-month "
+     "outcome is known at the origin (at least 24 rows), with a constant. Ridge alpha from {0.1, 1, 10, 100, 1000} by "
+     "expanding time-series CV on the last half of the training rows (4 folds, h_eff rows dropped before each "
+     "validation fold; ties -> larger alpha).", "models/multi.py"),
+    ("A23", "model", "ecm (S09, S10 <- CRU CR coil): Engle-Granger two-step, re-estimated at every origin on the months "
+     "known then: log(PPI) = c + b log(CRU), then the h_eff-month PPI change on the lagged error-correction term, the "
+     "CRU change this and last month and the own change. The ECM term is used whether or not a cointegration test "
+     "rejects (the Johansen results of the chain are reported with vecm).", "models/multi.py"),
+    ("A24", "model", "vecm (iron ore EUR -> CRU CR coil -> S09, log levels, common window, at least 48 months): "
+     "Johansen trace test at 5% (constant, 1 lagged difference) at every origin; rank >= 1 -> VECM with the constant "
+     "in the cointegration relation, else VAR(1) on first differences. Forecasts CRU CR coil and S09.",
+     "models/multi.py (vecm_johansen.csv)"),
+    ("A25", "model", "gbm_family: one quantile GBM per horizon over the 11 family targets (own changes, deviation from "
+     "the 12-month mean, 12-month volatility, all leading indicators with NaN where a target does not use them, "
+     "family); every month with a known outcome, so CRU from 2012 and stainless from 2008; max depth 2, min 40 rows "
+     "per leaf, L2 = 1, 100 trees, refit every 3 months. P50 = w x GBM P50 (band shifted with it); w from {0, 0.25, "
+     "0.5, 0.75, 1} minimising the MAE of the 2018-19 warm-up forecasts known at Jan-2020, then fixed.",
+     "models/multi.py (gbm_shrink.csv)"),
+    ("A26", "model", "Epoxy: the source file is not an exact identity of benzene, acetone, ECH and 'other costs' "
+     "(best fit R2 0.98, max residual about 290 EUR/t). epoxy_struct: h_eff-month log change of epoxy = sum of "
+     "beta_i x log change of the four inputs (no constant, beta on the months known at the origin); each input is "
+     "forecast with mean(naive, AutoETS), the combo_mean rule.", "features.epoxy_identity, models/multi.py"),
+    ("A27", "evaluation", "Family models are compared with the best univariate model per target and horizon (lowest "
+     "MAE over the scored origins among naive, drift, ETS, AutoETS, AutoARIMA, Theta, OptimizedTheta and the two "
+     "combinations), chosen with hindsight, which favours the benchmark; Diebold-Mariano on absolute errors, "
+     "Newey-West lag h_eff - 1, p < 0.05.", "models/multi.compare (multivariate_vs_univariate.csv)"),
 ]
 
 

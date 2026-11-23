@@ -83,7 +83,7 @@ summary / family × period, `best_by_family.csv`, `quote_basis.csv`, `aci_gamma.
 | File | Role |
 |---|---|
 | `src/targets.py` | **Target registry**: the one list of what is forecast (id, name, family, region, unit, material / bom_index, in_submission, history_start). Every forecasting script reads it |
-| `src/assumptions.py` | Every modelling assumption (A01–A13) → `outputs/assumptions.csv` |
+| `src/assumptions.py` | Every modelling assumption (A01–A27) → `outputs/assumptions.csv` |
 | `src/data.py` | Reads every source as published; BOM (from the standalone workbook); BOM cost index in two versions (PPI proxy, market prices), with weights and references at any date; `panel()` keeps each series' full history |
 | `src/preprocess.py` | One monthly panel: month-start dates, cut at Sep-2026, typo corrections, gap fill, USD → EUR. Writes `panel_monthly.csv`, `series_catalog.csv`, `transform_log.csv`. `as_of()` = the panel as seen at an origin (relative ragged edge, optional provisional drop); `nowcast()` = stainless fill of the missing month (on by default) |
 | `notebooks/01_data_quality.ipynb` | Coverage, missing values, wrong values, derived-column checks, IMF vs Westmetall, steel PPI vs CRU / MEPS |
@@ -91,7 +91,8 @@ summary / family × period, `best_by_family.csv`, `quote_basis.csv`, `aci_gamma.
 | `src/eda_risk.py` | Risk EDA: unit roots, fat tails, volatility clustering, band coverage, cost-index rises (3/6/9 m) and their drivers, regimes, correlations (fig11–fig15, `risk_*.csv`) |
 | `notebooks/02_eda_risk.ipynb` | Conclusions of the EDA: risk (§1–4), key prices, cost per unit, risk by horizon, supply-chain links, selling-price benchmark (§5–9) |
 | `src/backtest.py` | Rolling backtest, warm-up Jan-2018, scored Jan-2020 → origin: loops over the model registry (point pass), then the interval layer; data as of each origin (`as_of`); BOM indices rescaled to origin = 100; options `--origin`, `--no-nowcast`, `--drop-provisional`, `--bom-weights`, `--models` |
-| `src/models/` | One interface (`base.py`: origin context in, log-return quantiles out). `classic.py` naive / drift / damped ETS / Ridge / global GBM (the first backtest, unchanged); `sf.py` AutoETS, AutoARIMA, Theta, OptimizedTheta (statsforecast); `combo.py` mean(naive, AutoETS), median(naive, AutoETS, Theta, AutoARIMA); `lme.py` LME 3-month price as P50 + quote-basis table; `intervals.py` emp / split conformal / ACI / EWMA-scaled bands around any point model |
+| `src/models/` | One interface (`base.py`: origin context in, log-return quantiles out). `classic.py` naive / drift / damped ETS / Ridge / global GBM (the first backtest, unchanged); `sf.py` AutoETS, AutoARIMA, Theta, OptimizedTheta (statsforecast); `combo.py` mean(naive, AutoETS), median(naive, AutoETS, Theta, AutoARIMA); `lme.py` LME 3-month price as P50 + quote-basis table; `intervals.py` emp / split conformal / ACI / EWMA-scaled bands around any point model; `multi.py` family models with leading indicators: ARDL, Ridge (time-series CV alpha), ECM (steel PPI ← CRU), VECM chain (iron ore → CRU CR → S09, Johansen), slim global quantile GBM shrunk to naive, epoxy structural model, and the comparison with the best univariate model |
+| `src/features.py` | Leading indicators of the family models (1-4 per target, each with an economic reason) → `outputs/features/feature_availability.csv` (source, transformation, lag vs the origin, first month, meaning); **leakage test** (every design row at every origin rebuilt from the panel as seen at the origin = full-panel row); epoxy identity check (`epoxy_identity.csv`) |
 | `src/scoring.py` | Scores: rel. MAE, MASE, pinball, coverage (above / below), width, Winkler, Diebold-Mariano vs naive; by family × period (2020-21, 2022, 2023-26); best point model and band per family × horizon |
 | `src/sensitivity.py` | Backtest variants against the baseline (no nowcast, provisional dropped, origin BOM weights) → `sensitivity.csv`; a variant is re-run only when its inputs change (cache key) |
 | `src/plot_backtest.py` | Error relative to naive per series / model / horizon |
@@ -169,12 +170,49 @@ summary / family × period, `best_by_family.csv`, `quote_basis.csv`, `aci_gamma.
 - Runtime of a full backtest, 105 origins (`runtime.csv`): AutoARIMA 244 s, GBM 114 s, damped ETS 13 s,
   Ridge 12 s, AutoETS 9 s, Theta about 1 s; the whole interval layer < 1 s.
 
+### Family models with leading indicators (11 targets + epoxy, origins Jan-2020 → Sep-2026)
+
+- **Leakage test passes** (`features.py`): 1,155 design rows (11 targets × 105 origins) are identical whether built
+  from the panel as seen at the origin or from the full panel. A negative control (a feature shifted one month into
+  the future) is caught at the first origin. Sources, lags and economic meaning in `feature_availability.csv`.
+- **Epoxy is not an exact identity** of benzene, acetone, ECH and "other costs" (`epoxy_identity.csv`): best fit
+  R² 0.98, max residual about 290 EUR/t. Estimated elasticities at Sep-2026 (9 months): other costs 0.58, ECH 0.24,
+  acetone 0.10, benzene 0.09.
+- **No family model is significantly better than the best univariate model, on any target or horizon** (Diebold-Mariano,
+  `multivariate_vs_univariate.csv`), and none is significantly better than naive. Closest: VECM on S09 at 3 months
+  (0.97 × the best univariate MAE), the epoxy structural model at 6 months (0.96), ARDL / Ridge on S09 at 3 months (0.98).
+  - ARDL is significantly *worse* than the best univariate model on 2 / 4 / 7 targets at 3 / 6 / 9 months, Ridge on
+    1 / 1 / 7 (mostly LME metals and CRU coil at 9 months). Ridge picks the largest penalty (alpha = 1000) in 38% of
+    its fits: the indicators carry little signal once the target's own changes are in.
+  - On the steel PPI at 3 months ECM (S09 0.84, S10 0.86 × naive's MAE) and VECM (S09 0.77) beat naive, but not
+    damped ETS (0.97-1.05 × its MAE, DM p > 0.7), which already captures the PPI's momentum. ECM loses to naive at
+    9 months (1.25-1.29); VECM adds nothing for CRU CR coil (1.00 / 1.19 / 1.26 × naive). Johansen finds at least one cointegrating relation in
+    iron ore → CRU CR → S09 at every origin from 2020 (rank 1 at 70 of 72 origins).
+  - The slim global GBM gets shrink weight w = 0 from the warm-up (any weight on the GBM raised the warm-up MAE from
+    0.049 to up to 0.056): its P50 is naive.
+  - The in-sample correlations of the EDA (r 0.4-0.6) do not survive out of sample: about 40 independent 3-month
+    windows per target are too few to estimate even 3-5 coefficients reliably.
+- Bands: around the family models, ewma / aci give the same coverage pattern as around the univariate models
+  (ARDL + ewma 82 / 82 / 74%).
+- Runtime: the six family models add about 3 minutes to the backtest (Ridge with CV 99 s, GBM 72 s).
+- **Deviations from the step-3 plan** (not expected to change the result: Ridge already shrinks most indicator
+  coefficients towards 0):
+  - Lags: nickel uses this and last month's change (plan: 1-2 months); TTF and power use the 3-month change up to
+    the anchor (plan: 1-month lag); Brent uses the 3-month change up to the anchor, i.e. lags 0-2 (plan: 1-3). For a
+    forecast from the anchor, the latest month's move is the part that passes through over the next months, so it
+    is kept.
+  - The error-correction term log(S09) - b log(CRU) is used in `ecm` only, not as an ARDL / Ridge regressor.
+  - ARDL in direct form only (no ARIMAX); the optional USD price × EUR/USD split is not built.
+- **Consequence for the submission**: keep univariate P50s (naive / damped ETS / combo_mean per family). The family
+  models stay in the backtest as documented evidence; VECM / ECM on the steel PPI and epoxy_struct are the only
+  candidates worth an ensemble slot in step 5.
+
 ## Next steps
 
 1. Forecast CSV `<team>_forecast_202609.csv`: per-series model choice by backtest, calibrated intervals (wider,
    asymmetric, from a window that includes 2020-22).
 2. Market prices: LME 3-month forward and the Oct-2026 analyst view as P50 adjustments.
-3. Indices: add only the upstream drivers that predict 3 months ahead (a Ridge with all drivers did not beat naive).
+3. ~~Indices: upstream drivers~~ done (family models): none significantly beats the best univariate model; VECM / ECM (steel PPI) and epoxy_struct as optional ensemble members.
 4. Pretrained model (Chronos-Bolt) as a benchmark.
 5. ~~Publication lags in the backtest~~ done: `preprocess.as_of()` cuts every origin by the relative lag (`rel_lag_m`).
 6. Business layer: joint scenarios (resample whole months) → BOM cost (market-price index) → margin at risk → quote rule.
@@ -207,6 +245,13 @@ derive, fx, ragged_edge, provisional).
 | A18 | interval | Conformal bands (conf, aci, ewma) use only residuals published at the origin (outcome month + data lag <= origin); at least 8 residuals, else the emp band (flag fallback). Finite-sample conformal ranks; lower and upper bounds estimated separately. P10 <= P50 <= P90 enforced by clipping (Ridge / GBM native quantiles are sorted, as in the first backtest). | `models/intervals.py` |
 | A19 | interval | ACI: target 80%, delayed feedback (an outcome updates alpha when it is published). One gamma per point model (horizons and targets pooled) from {0, 0.005, 0.01, 0.02, 0.05}, chosen on warm-up bands only (outcomes published by Jan-2020, ACI active); 0.005 if fewer than 200 such bands. h = 9 has almost no active warm-up bands, so the choice rests on h = 3 and 6. | `models/intervals.py` |
 | A20 | interval | EWMA volatility: lambda = 0.9 on squared monthly log changes known at the origin; residuals standardised by sigma x sqrt(h_eff). | `models/intervals.EWMA_LAMBDA` |
+| A21 | features | Family models use 1-4 leading indicators per target, each with an economic reason (steel PPI <- CRU CR coil this and last month + iron ore; CRU coil <- iron ore, coal, TTF (+ zinc for HDG); stainless <- nickel this and last month; plastics PPI <- Brent 3-month change; aluminium PPI <- LME aluminium, TTF, power; LME copper / aluminium <- 3-month / cash basis and stock change, + TTF and power for aluminium), plus the target's own 1- and 3-month changes. Every feature at month m uses data up to m only; the leakage test rebuilds every design row at every origin 2018-01..2026-09 from the panel as seen at the origin and requires it to equal the full-panel row. Separate USD price x EUR/USD forecasts (optional in the plan) are not built. | `features.py (feature_availability.csv)` |
+| A22 | model | ardl / ridge_fam: one direct regression per target and horizon on the months whose h_eff-month outcome is known at the origin (at least 24 rows), with a constant. Ridge alpha from {0.1, 1, 10, 100, 1000} by expanding time-series CV on the last half of the training rows (4 folds, h_eff rows dropped before each validation fold; ties -> larger alpha). | `models/multi.py` |
+| A23 | model | ecm (S09, S10 <- CRU CR coil): Engle-Granger two-step, re-estimated at every origin on the months known then: log(PPI) = c + b log(CRU), then the h_eff-month PPI change on the lagged error-correction term, the CRU change this and last month and the own change. The ECM term is used whether or not a cointegration test rejects (the Johansen results of the chain are reported with vecm). | `models/multi.py` |
+| A24 | model | vecm (iron ore EUR -> CRU CR coil -> S09, log levels, common window, at least 48 months): Johansen trace test at 5% (constant, 1 lagged difference) at every origin; rank >= 1 -> VECM with the constant in the cointegration relation, else VAR(1) on first differences. Forecasts CRU CR coil and S09. | `models/multi.py (vecm_johansen.csv)` |
+| A25 | model | gbm_family: one quantile GBM per horizon over the 11 family targets (own changes, deviation from the 12-month mean, 12-month volatility, all leading indicators with NaN where a target does not use them, family); every month with a known outcome, so CRU from 2012 and stainless from 2008; max depth 2, min 40 rows per leaf, L2 = 1, 100 trees, refit every 3 months. P50 = w x GBM P50 (band shifted with it); w from {0, 0.25, 0.5, 0.75, 1} minimising the MAE of the 2018-19 warm-up forecasts known at Jan-2020, then fixed. | `models/multi.py (gbm_shrink.csv)` |
+| A26 | model | Epoxy: the source file is not an exact identity of benzene, acetone, ECH and 'other costs' (best fit R2 0.98, max residual about 290 EUR/t). epoxy_struct: h_eff-month log change of epoxy = sum of beta_i x log change of the four inputs (no constant, beta on the months known at the origin); each input is forecast with mean(naive, AutoETS), the combo_mean rule. | `features.epoxy_identity, models/multi.py` |
+| A27 | evaluation | Family models are compared with the best univariate model per target and horizon (lowest MAE over the scored origins among naive, drift, ETS, AutoETS, AutoARIMA, Theta, OptimizedTheta and the two combinations), chosen with hindsight, which favours the benchmark; Diebold-Mariano on absolute errors, Newey-West lag h_eff - 1, p < 0.05. | `models/multi.compare (multivariate_vs_univariate.csv)` |
 
 Limits:
 - BOM from the standalone `RM_Prices_XHEC_Challenge.xlsx`; the older BOM in `data.zip` (`bom_materials.csv`) is not used.
