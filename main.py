@@ -1,4 +1,6 @@
-"""Run the pipeline: preprocess -> EDA -> risk EDA -> features (leakage test) -> backtest -> sensitivity -> backtest chart -> diagrams.
+"""Run the pipeline: preprocess -> EDA -> risk EDA -> features (leakage tests) -> backtest -> sensitivity -> backtest chart
+-> diagrams. The backtest includes Chronos-2 (optional extra `fm`): forecasts come from outputs/backtest/fm_cache/,
+only missing ones are computed (skipped with a message when chronos-forecasting is not installed).
 
 Usage: python main.py [--origin YYYY-MM] [--skip-backtest] [--skip-sensitivity]
   --origin         forecast origin (default 2026-09, the data cutoff: the submission). An earlier origin (e.g. 2026-06)

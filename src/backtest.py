@@ -174,6 +174,8 @@ def run(origin=P.CUTOFF, nowcast=True, drop_provisional=False, bom_weights="base
                                             "n_train": p.n_train})
         if t.month == 1 or t == origin:
             print(f"  origin {t:%Y-%m} ({time.time() - t0:.0f}s)", flush=True)
+    for m in registry:
+        m.finish()
 
     pts = pd.DataFrame(rows)
     pts["r"] = np.log(pts["actual"] / pts["y_t"])
@@ -286,6 +288,8 @@ def main(argv=None):
         print_lme(per, qb)
     if set(per["point"]) & set(models.multi.NAMES):
         models.multi.write_reports(res, d)
+    if set(per["point"]) & set(models.fm.NAMES):
+        models.fm.write_reports(res, d)
     return res, per, summ
 
 

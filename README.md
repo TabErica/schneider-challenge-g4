@@ -40,13 +40,24 @@ uv run python src/preprocess.py         # any single step
 uv run python src/backtest.py --help    # options (--no-nowcast, --drop-provisional, --bom-weights origin)
 ```
 
+Optional: the Chronos-2 benchmark needs PyTorch (about 1 GB), kept out of the main install in the `fm` extra.
+`uv sync` alone gives the full pipeline without it: the backtest then reads the Chronos forecasts from
+`outputs/backtest/fm_cache/` and skips the ones it does not find (printed).
+
+```bash
+uv sync --extra fm                      # + chronos-forecasting, torch (CPU); a later plain `uv sync` removes them
+uv run python main.py                   # computes only the Chronos forecasts missing from the cache (~30 s on CPU,
+                                        # + model download of 480 MB the first time)
+```
+
 Data-quality checks: open `notebooks/01_data_quality.ipynb` in VS Code with the `.venv` kernel (`uv sync` installs it).
 
 - No need to activate `.venv/`: `uv run` uses it automatically (or `source .venv/bin/activate`).
 - Add or remove a dependency with `uv add <pkg>` / `uv remove <pkg>`, then commit both `pyproject.toml` and `uv.lock`.
 - After pulling changes to `uv.lock`, run `uv sync` again.
 - Without uv: `pip install -r requirements.txt` (same versions; regenerate with
-  `uv export --no-hashes --no-dev -o requirements.txt` after changing dependencies).
+  `uv export --no-hashes --no-dev -o requirements.txt` after changing dependencies), plus
+  `pip install chronos-forecasting==2.3.2` for the optional Chronos-2 benchmark.
 
 ### 3. Pre-commit hooks (once per clone)
 
@@ -77,7 +88,9 @@ Outputs: `outputs/assumptions.csv` (every modelling assumption, see below), `out
 series catalog with relative lags and provisional months, transformation log), `outputs/eda/` (charts, tables) and
 `outputs/backtest/` (predictions of every `point+interval` label, forecasts at the origin, scores per series /
 summary / family × period, `best_by_family.csv`, `quote_basis.csv`, `aci_gamma.csv`, `runtime.csv`, training sizes,
-`sensitivity.csv`; one sub-folder per sensitivity variant or held-back origin).
+`sensitivity.csv`; one sub-folder per sensitivity variant or held-back origin). Chronos-2: `fm_vs_benchmarks.csv`,
+`fm_by_family.csv`, `fm_intervals.csv`, `fm_runtime.csv`, and the forecast cache `fm_cache/` (one row per origin,
+target, input hash and step; reused only for an identical input).
 `DECK=1` renders charts in slide style to `outputs/slides/`. Colours: **RM6 green `#16884A`, RM AirSeT blue `#3478B8`**.
 
 | File | Role |
@@ -92,6 +105,7 @@ summary / family × period, `best_by_family.csv`, `quote_basis.csv`, `aci_gamma.
 | `notebooks/02_eda_risk.ipynb` | Conclusions of the EDA: risk (§1–4), key prices, cost per unit, risk by horizon, supply-chain links, selling-price benchmark (§5–9) |
 | `src/backtest.py` | Rolling backtest, warm-up Jan-2018, scored Jan-2020 → origin: loops over the model registry (point pass), then the interval layer; data as of each origin (`as_of`); BOM indices rescaled to origin = 100; options `--origin`, `--no-nowcast`, `--drop-provisional`, `--bom-weights`, `--models` |
 | `src/models/` | One interface (`base.py`: origin context in, log-return quantiles out). `classic.py` naive / drift / damped ETS / Ridge / global GBM (the first backtest, unchanged); `sf.py` AutoETS, AutoARIMA, Theta, OptimizedTheta (statsforecast); `combo.py` mean(naive, AutoETS), median(naive, AutoETS, Theta, AutoARIMA); `lme.py` LME 3-month price as P50 + quote-basis table; `intervals.py` emp / split conformal / ACI / EWMA-scaled bands around any point model; `multi.py` family models with leading indicators: ARDL, Ridge (time-series CV alpha), ECM (steel PPI ← CRU), VECM chain (iron ore → CRU CR → S09, Johansen), slim global quantile GBM shrunk to naive, epoxy structural model, and the comparison with the best univariate model |
+| `src/models/fm.py` | Chronos-2 (pretrained foundation model, zero-shot, CPU): univariate and with past covariates (sources of the step-3 leading indicators), forecast cache keyed by input hash, input leakage check, comparison with naive / best univariate / best multivariate by family, raw vs calibrated bands, runtime |
 | `src/features.py` | Leading indicators of the family models (1-4 per target, each with an economic reason) → `outputs/features/feature_availability.csv` (source, transformation, lag vs the origin, first month, meaning); **leakage test** (every design row at every origin rebuilt from the panel as seen at the origin = full-panel row); epoxy identity check (`epoxy_identity.csv`) |
 | `src/scoring.py` | Scores: rel. MAE, MASE, pinball, coverage (above / below), width, Winkler, Diebold-Mariano vs naive; by family × period (2020-21, 2022, 2023-26); best point model and band per family × horizon |
 | `src/sensitivity.py` | Backtest variants against the baseline (no nowcast, provisional dropped, origin BOM weights) → `sensitivity.csv`; a variant is re-run only when its inputs change (cache key) |
@@ -207,13 +221,56 @@ summary / family × period, `best_by_family.csv`, `quote_basis.csv`, `aci_gamma.
   models stay in the backtest as documented evidence; VECM / ECM on the steel PPI and epoxy_struct are the only
   candidates worth an ensemble slot in step 5.
 
+### Pretrained foundation model: Chronos-2 zero-shot (22 submitted targets, origins Jan-2020 → Sep-2026)
+
+Setup (A28–A31): `amazon/chronos-2` (120M parameters, Apache-2.0), revision `29ec3766`, `chronos-forecasting` 2.3.2,
+CPU, no fine-tuning. `chronos2` = univariate, context = whole history up to the anchor (as_of + nowcast, as every
+model); `chronos2_cov` = + 1–3 past covariates (sources of the step-3 leading indicators, never future values), 11
+family targets. Same interval layer (conf / aci / ewma) around its P50; `+native` = Chronos' own P10 / P90.
+Comparison tables: `fm_vs_benchmarks.csv` (per target, vs naive / best univariate / best multivariate, each chosen
+with hindsight on MAE, so the benchmarks are favoured), `fm_by_family.csv`, `fm_intervals.csv`, `fm_release_split.csv`.
+
+- **Pretraining leakage.** Model card: trained on "a subset of Chronos Datasets (excluding test portion of datasets
+  that overlap with GIFT-Eval)", "a subset of GIFT-Eval Pretrain" and synthetic data; the paper (arXiv 2510.15821,
+  17 Oct 2025) lists real datasets incl. M4 monthly and gives no cutoff date of the real data. Whether a public series
+  of this panel (IMF / Eurostat / LME prices) is in it cannot be ruled out. Weights on the Hugging Face hub since
+  2025-10-30 (unchanged since; GitHub release note 20 Oct 2025), so **origins from 2025-11 are reported separately**:
+  their outcomes cannot be in the training data. Only 8 / 5 / 2 such origins at 3 / 6 / 9 months (173 / 107 / 41
+  target-origins): too few for a Diebold-Mariano test (n < 10 per target), so pooled ratios only.
+- **No sign of memorisation**: pooled MAE / naive MAE of `chronos2` is 0.99 / 1.05 / 1.07 (3 / 6 / 9 months)
+  before 2025-11 and 0.99 / 1.02 / 1.05 after: no edge that disappears after the release. `chronos2_cov` gets worse
+  after it (1.05 / 1.07 / 1.08 → 1.13 / 1.26 / 1.19) while ARDL / Ridge improve over the same months.
+- **Point forecasts: Chronos-2 is a naive-like forecaster, no better than the univariate models.** Median rel. MAE
+  vs naive by family (3 / 6 / 9 months): BOM 1.01 / 1.04 / 1.02, base metals 1.02 / 1.04 / 1.09, epoxy 0.95 / 1.02 /
+  1.07, plastics 0.93 / 0.98 / 1.02, steel 0.99 / 1.01 / 1.02; vs the best univariate model of each target 0.96–1.10.
+  Diebold-Mariano vs the best univariate model: significantly better on 1 of 66 target × horizon cells (zinc 9 m,
+  0.91), significantly worse on 6 (copper S01 3 / 6 / 9 m, D01 9 m, BOM RM6 PPI-proxy 6 / 9 m). Against naive it is
+  significantly better on aluminium PPI S08 at 3 months (0.70) and zinc 9 m only.
+- **With covariates**: better on the PPIs (median rel. MAE vs naive: steel 0.93 / 0.94 / 0.94, plastics 0.85 /
+  0.87 / 0.94; S08 at 3 months 0.63, significantly better than the best univariate model, ETS: 0.85 × its MAE,
+  p = 0.03), worse on LME copper (1.10–1.18 × naive, significantly worse than the best univariate at 3 and 9 months).
+  Against the best multivariate model of each target (hindsight) it is 0.81–0.97 by family; significantly better on
+  S10 / S11 / stainless at 9 months and HDG coil (DM p < 0.05), mostly where ARDL / Ridge are poor at 9 months.
+- **Raw Chronos bands are too narrow and lopsided**: coverage of `+native` 72 / 70 / 69% (3 / 6 / 9 months), misses
+  above P90 20 / 24 / 27% vs below P10 8 / 6 / 4%; after 2025-11 only 70 / 50 / 29%. Calibrated: conf = aci (gamma 0
+  chosen on the warm-up for chronos2) 74 / 72 / 69%, ewma 81 / 79 / 76% at 1.4–1.9 × the native Winkler at 6–9 months
+  (wider bands). `chronos2_cov + aci` 77 / 73 / 72%. Same pattern as around the univariate models: the calibration
+  fixes the level of coverage, not the upward skew.
+- **Family ranking** (`best_by_family.csv`, lowest mean MASE): `chronos2` now ranks first for base metals 3 / 6 m,
+  plastics 3 / 6 / 9 m and steel 3 / 9 m, by 0.4–3% of MASE over the previous best, none of it significant.
+- **Runtime** (CPU, Apple M4, 10 cores): inference 14 s (`chronos2`, 105 origins × 25 series) and 18 s (`chronos2_cov`,
+  105 × 11); first model download 480 MB (about 50 s). With the cache, the backtest only reads it (< 1 s).
+- **Consequence for the submission**: Chronos-2 adds no accuracy that the univariate models do not already give;
+  keep it as a documented benchmark. `chronos2_cov` on the EU PPIs (S08 / S09 / S10 / S11) is the only candidate for
+  an ensemble slot, and its post-release deterioration argues against relying on it.
+
 ## Next steps
 
 1. Forecast CSV `<team>_forecast_202609.csv`: per-series model choice by backtest, calibrated intervals (wider,
    asymmetric, from a window that includes 2020-22).
 2. Market prices: LME 3-month forward and the Oct-2026 analyst view as P50 adjustments.
 3. ~~Indices: upstream drivers~~ done (family models): none significantly beats the best univariate model; VECM / ECM (steel PPI) and epoxy_struct as optional ensemble members.
-4. Pretrained model (Chronos-Bolt) as a benchmark.
+4. ~~Pretrained model as a benchmark~~ done (Chronos-2, zero-shot): see the findings above.
 5. ~~Publication lags in the backtest~~ done: `preprocess.as_of()` cuts every origin by the relative lag (`rel_lag_m`).
 6. Business layer: joint scenarios (resample whole months) → BOM cost (market-price index) → margin at risk → quote rule.
 
@@ -252,6 +309,10 @@ derive, fx, ragged_edge, provisional).
 | A25 | model | gbm_family: one quantile GBM per horizon over the 11 family targets (own changes, deviation from the 12-month mean, 12-month volatility, all leading indicators with NaN where a target does not use them, family); every month with a known outcome, so CRU from 2012 and stainless from 2008; max depth 2, min 40 rows per leaf, L2 = 1, 100 trees, refit every 3 months. P50 = w x GBM P50 (band shifted with it); w from {0, 0.25, 0.5, 0.75, 1} minimising the MAE of the 2018-19 warm-up forecasts known at Jan-2020, then fixed. | `models/multi.py (gbm_shrink.csv)` |
 | A26 | model | Epoxy: the source file is not an exact identity of benzene, acetone, ECH and 'other costs' (best fit R2 0.98, max residual about 290 EUR/t). epoxy_struct: h_eff-month log change of epoxy = sum of beta_i x log change of the four inputs (no constant, beta on the months known at the origin); each input is forecast with mean(naive, AutoETS), the combo_mean rule. | `features.epoxy_identity, models/multi.py` |
 | A27 | evaluation | Family models are compared with the best univariate model per target and horizon (lowest MAE over the scored origins among naive, drift, ETS, AutoETS, AutoARIMA, Theta, OptimizedTheta and the two combinations), chosen with hindsight, which favours the benchmark; Diebold-Mariano on absolute errors, Newey-West lag h_eff - 1, p < 0.05. | `models/multi.compare (multivariate_vs_univariate.csv)` |
+| A28 | model | chronos2 (amazon/chronos-2, revision 29ec3766, chronos-forecasting 2.3.2, CPU), zero-shot: context = the target's whole history up to its anchor as seen at the origin (as_of + nowcast, as every model), fed as y / y[anchor] rounded to 10 decimals (scale-free, so the BOM indices give the same input whatever their origin = 100 factor); max(h_eff) steps (9 with the nowcast); P10 / P50 / P90 at step h_eff, log of the ratio = the log return. Series forecast independently (no cross-learning); no fine-tuning. | `models/fm.py` |
+| A29 | model | chronos2_cov: as chronos2 + past covariates only (never known-future values): 1-3 source series of the target's step-3 leading indicators, as published, aligned on the target's context months (values up to the anchor). TTF dropped for HDG coil and LME aluminium to keep 3. Only the 11 family targets. | `models/fm.COVARIATES` |
+| A30 | evaluation | Pretraining leakage: Chronos-2's training corpus (parts of the Chronos and GIFT-Eval pretraining data, incl. M4 monthly, plus synthetic series) has no published cutoff and may contain some public series of this panel. Weights published on the Hugging Face hub on 2025-10-30 (paper 2025-10-17): origins from 2025-11 are reported separately (post_release); their outcomes cannot be in the training data. | `models/fm.POST_RELEASE` |
+| A31 | pipeline | Chronos forecasts are cached (outputs/backtest/fm_cache/) per origin, target and sha256 of the exact input: a cached forecast is reused only for an identical input. Without the optional fm dependencies the backtest reads the cache and skips what is missing. | `models/fm.Cache` |
 
 Limits:
 - BOM from the standalone `RM_Prices_XHEC_Challenge.xlsx`; the older BOM in `data.zip` (`bom_materials.csv`) is not used.
@@ -260,6 +321,25 @@ Limits:
 - Price benchmark is synthetic and not like-for-like (Xiria 630 A / 21 kA vs RM6 400 A / 12.5 kA).
 - Rough publication lags (`lag_m` in `series_catalog.csv`, from the Nov-2026 download) are informative only; the
   backtest uses the relative lag at the origin (`rel_lag_m`).
+
+## Software and model licences
+
+Third-party code and models used by the pipeline (data licences: see §1). Licences as declared in each package's
+metadata; Chronos-2 as stated on its official model card (`license: apache-2.0`, checked 2026-11-23).
+
+| Component | Version | Licence | Source |
+|---|---|---|---|
+| pandas | 3.0.5 | BSD-3-Clause | https://pandas.pydata.org |
+| NumPy | 2.5.3 | BSD-3-Clause (bundled parts: 0BSD, MIT, Zlib, CC0-1.0) | https://numpy.org |
+| statsmodels | 0.15.0 | BSD-3-Clause | https://www.statsmodels.org |
+| scikit-learn | 1.9.1 | BSD-3-Clause | https://scikit-learn.org |
+| statsforecast (Nixtla) | 2.0.1 | Apache-2.0 | https://github.com/Nixtla/statsforecast |
+| matplotlib | 3.11.2 | matplotlib licence (PSF-based) | https://matplotlib.org |
+| openpyxl | 3.1.5 | MIT | https://openpyxl.readthedocs.io |
+| chronos-forecasting (optional `fm`) | 2.3.2 | Apache-2.0 | https://github.com/amazon-science/chronos-forecasting |
+| PyTorch (optional `fm`) | 2.15.0 | BSD-3-Clause (package metadata: Apache-2.0 AND BSD-3-Clause AND MIT AND others for bundled parts) | https://pytorch.org |
+| transformers (optional `fm`, Chronos dependency) | 5.24.0 | Apache-2.0 | https://github.com/huggingface/transformers |
+| **Chronos-2** model weights (amazon/chronos-2) | Hugging Face revision `29ec3766` (weights of 2025-10-30), 120M parameters | Apache-2.0 | https://huggingface.co/amazon/chronos-2 |
 
 ## AI-tool disclosure
 

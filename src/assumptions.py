@@ -103,6 +103,23 @@ ASSUMPTIONS = [
      "MAE over the scored origins among naive, drift, ETS, AutoETS, AutoARIMA, Theta, OptimizedTheta and the two "
      "combinations), chosen with hindsight, which favours the benchmark; Diebold-Mariano on absolute errors, "
      "Newey-West lag h_eff - 1, p < 0.05.", "models/multi.compare (multivariate_vs_univariate.csv)"),
+    ("A28", "model", "chronos2 (amazon/chronos-2, revision 29ec3766, chronos-forecasting 2.3.2, CPU), zero-shot: "
+     "context = the target's whole history up to its anchor as seen at the origin (as_of + nowcast, as every model), "
+     "fed as y / y[anchor] rounded to 10 decimals (scale-free, so the BOM indices give the same input whatever their "
+     "origin = 100 factor); max(h_eff) steps (9 with the nowcast); P10 / P50 / P90 at step h_eff, log of the "
+     "ratio = the log return. Series forecast independently (no cross-learning); no fine-tuning.", "models/fm.py"),
+    ("A29", "model", "chronos2_cov: as chronos2 + past covariates only (never known-future values): 1-3 source series "
+     "of the target's step-3 leading indicators, as published, aligned on the target's context months (values up to "
+     "the anchor). TTF dropped for HDG coil and LME aluminium to keep 3. Only the 11 family targets.",
+     "models/fm.COVARIATES"),
+    ("A30", "evaluation", "Pretraining leakage: Chronos-2's training corpus (parts of the Chronos and GIFT-Eval "
+     "pretraining data, incl. M4 monthly, plus synthetic series) has no published cutoff and may contain some public "
+     "series of this panel. Weights published on the Hugging Face hub on 2025-10-30 (paper 2025-10-17): origins from "
+     "2025-11 are reported separately (post_release); their outcomes cannot be in the training data.",
+     "models/fm.POST_RELEASE"),
+    ("A31", "pipeline", "Chronos forecasts are cached (outputs/backtest/fm_cache/) per origin, target and sha256 of "
+     "the exact input: a cached forecast is reused only for an identical input. Without the optional fm dependencies "
+     "the backtest reads the cache and skips what is missing.", "models/fm.Cache"),
 ]
 
 
