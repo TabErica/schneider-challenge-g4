@@ -32,7 +32,7 @@ def _m(id, name, family, region, unit, start, submit=True):
 
 
 def _b(id, name):
-    return Target(id, name, "BOM", "EU", "index (Sep-2026 = 100)", "bom_index", True, "2016-11")
+    return Target(id, name, "BOM", "EU", "index (origin = 100)", "bom_index", True, "2016-11")
 
 
 REGISTRY: list[Target] = [

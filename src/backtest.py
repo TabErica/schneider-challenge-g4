@@ -1,19 +1,21 @@
 """Rolling-origin backtest at 3 / 6 / 9 months -> outputs/backtest/.
 
 Targets come from targets.py. At every origin t the panel is cut with preprocess.as_of(): each series loses the same
-number of months it lacks at the real origin (Sep-2026), so stainless 304 always ends at t - 1. Every model forecasts
-log(y[t+h] / y[a]) with P10/P50/P90, where a = the target's last month known at t; the effective horizon is
-h_eff = h + (t - a) (stainless 304 and the market-price BOM indices: h + 1). The BOM indices are rebuilt at every
-origin from the cut panel, so they inherit the ragged edge of their inputs.
+number of months it lacks at the real origin (Sep-2026), so stainless 304 always ends at t - 1. By default (also for
+the submission) that missing month is nowcast (preprocess.nowcast: nickel + EU steel PPI), so every target is known
+at t. Every model forecasts log(y[t+h] / y[a]) with P10/P50/P90, where a = the target's last month known at t; the
+effective horizon is h_eff = h + (t - a) (h, or h + 1 for stainless 304 and the market-price BOM with --no-nowcast).
+The BOM indices are rebuilt at every origin from the cut panel, so they inherit the ragged edge of their inputs, and
+are rescaled so that the run's origin month = 100 (bom_rebase.csv).
 Univariate models (naive, drift, ETS) use each target's full history; Ridge and the global GBM use the months where
 every input is known. No forward fill anywhere.
 
-    python backtest.py [--origin 2026-09] [--nowcast] [--drop-provisional] [--bom-weights base|origin]
+    python backtest.py [--origin 2026-09] [--no-nowcast] [--drop-provisional] [--bom-weights base|origin]
 
 --origin            last origin (default: the data cutoff, Sep-2026). An earlier origin is a held-back check: the run
                     only sees data as of that origin, and holdout_check.csv compares its forecasts with the months after.
---nowcast           fill stainless 304's missing month at every origin (preprocess.nowcast) instead of h + 1.
---drop-provisional  remove the last 2 months of the Eurostat PPIs at every origin (sensitivity; baseline keeps them).
+--no-nowcast        sensitivity: no stainless nowcast; stainless 304 and the market-price BOM forecast from t - 1 (h + 1).
+--drop-provisional  sensitivity: remove the last 2 months of the Eurostat PPIs at every origin (their h_eff = h + 2).
 --bom-weights       base = Sep-2026 cost shares (submission, default); origin = shares from prices known at each origin.
 Non-default options write to outputs/backtest/<tag>/ so the baseline is never overwritten.
 """
@@ -84,7 +86,7 @@ class Bom:
     origin: cost shares and references from the latest prices known at the origin (no look-ahead)."""
 
     def __init__(self, full, mode):
-        self.mode = mode
+        self.mode, self.scale = mode, {}
         if mode == "base":
             self.base_costs = D.bom_cost_table(full, full)
             self.base_refs = {v: D.bom_refs(full, self.base_costs, v) for v in ("proxy", "market")}
@@ -98,7 +100,18 @@ class Bom:
         return costs, {v: D.bom_refs(pt, costs, v, at=t) for v in ("proxy", "market")}
 
     def columns(self, prices, costs, refs):
-        return pd.concat([D.bom_index(prices, costs, v, refs[v]) for v in ("proxy", "market")], axis=1)[BOM_IDS]
+        out = pd.concat([D.bom_index(prices, costs, v, refs[v]) for v in ("proxy", "market")], axis=1)[BOM_IDS]
+        return out * pd.Series({c: self.scale.get(c, 1.0) for c in BOM_IDS})
+
+    def rebase(self, seen, origin):
+        """Base mode: one constant per index so that its value in the origin month, as seen at the origin (`seen`,
+        with the stainless nowcast when it is on), is 100. Cost shares are unchanged (Sep-2026); a constant does not
+        change any log change, so it only sets the scale of the forecast levels. An index with no value in the origin
+        month (market version with --no-nowcast) keeps its Sep-2026 references (factor 1)."""
+        self.scale = {}
+        raw = self.columns(seen, self.base_costs, self.base_refs).loc[origin]
+        self.scale = {c: (100 / v if pd.notna(v) else 1.0) for c, v in raw.items()}
+        return pd.DataFrame({"index_at_origin_before": raw, "factor": pd.Series(self.scale)}).rename_axis("series")
 
 
 def check_history(full):
@@ -109,8 +122,8 @@ def check_history(full):
             raise ValueError(f"{t.id}: registry history_start {t.history_start}, data starts {first}")
 
 
-def run(origin=P.CUTOFF, nowcast=False, drop_provisional=False, bom_weights="base"):
-    """Predictions for every origin FIRST_ORIGIN..origin and horizon, plus the nowcast log and training sizes.
+def run(origin=P.CUTOFF, nowcast=True, drop_provisional=False, bom_weights="base"):
+    """Predictions for every origin FIRST_ORIGIN..origin and horizon, the nowcast log and the BOM rebase factors.
     Rows are kept when the outcome is known as of `origin`, and always at `origin` itself (the forecast)."""
     t0, origin = time.time(), pd.Timestamp(origin)
     cut = P.load()  # full history, cut at the data cutoff (Sep-2026)
@@ -118,6 +131,7 @@ def run(origin=P.CUTOFF, nowcast=False, drop_provisional=False, bom_weights="bas
     bom = Bom(cut, bom_weights)
     base = bom if bom_weights == "base" else Bom(cut, "base")
     full = P.as_of(cut, origin, lags)  # everything the run may see: data as of `origin` (outcomes come from here)
+    rebase = base.rebase(P.nowcast(full, origin)[0] if nowcast else full, origin)  # origin month = 100
     full = full.join(base.columns(full, base.base_costs, base.base_refs))
     check_history(full)
 
@@ -195,7 +209,7 @@ def run(origin=P.CUTOFF, nowcast=False, drop_provisional=False, bom_weights="bas
                                  "anchor_provisional": a in prov.get(s, [])})
         if t.month == 1 or t == origin:
             print(f"  origin {t:%Y-%m} ({time.time() - t0:.0f}s)", flush=True)
-    return pd.DataFrame(rows), pd.DataFrame(nowlog)
+    return pd.DataFrame(rows), pd.DataFrame(nowlog), rebase
 
 
 def score(res, save_dir=None):
@@ -245,10 +259,12 @@ def training_samples(res, origin):
     return out.loc[TARGET_IDS]
 
 
-def holdout_check(res, origin, bom_weights="base"):
+def holdout_check(res, origin, bom_weights="base", rebase=None):
     """Forecasts made at an earlier origin against the outcomes published after it (up to the data cutoff).
-    BOM rows only with the Sep-2026 weights (the outcome index of other weights is not stored)."""
+    BOM rows only with the Sep-2026 weights (the outcome index of other weights is not stored), on the run's scale."""
     full = D.panel()  # full history up to the cutoff, BOM indices with Sep-2026 weights, no fill
+    for c, k in ({} if rebase is None else rebase["factor"]).items():
+        full[c] = full[c] * k
     f = res[res.origin == origin].copy()
     if bom_weights != "base":
         f = f[~f.series.isin(BOM_IDS)]
@@ -264,7 +280,7 @@ def holdout_check(res, origin, bom_weights="base"):
 
 def out_dir(origin, nowcast, drop_provisional, bom_weights):
     tag = [f"origin_{origin:%Y-%m}"] if origin != P.CUTOFF else []
-    tag += ["nowcast"] * nowcast + ["drop_provisional"] * drop_provisional
+    tag += ["no_nowcast"] * (not nowcast) + ["drop_provisional"] * drop_provisional
     tag += [f"bom_weights_{bom_weights}"] if bom_weights != "base" else []
     d = OUT / "_".join(tag) if tag else OUT
     d.mkdir(parents=True, exist_ok=True)
@@ -274,14 +290,16 @@ def out_dir(origin, nowcast, drop_provisional, bom_weights):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--origin", default=f"{P.CUTOFF:%Y-%m}")
-    ap.add_argument("--nowcast", action="store_true")
+    ap.add_argument("--no-nowcast", action="store_true")
     ap.add_argument("--drop-provisional", action="store_true")
     ap.add_argument("--bom-weights", default="base", choices=["base", "origin"])
     a = ap.parse_args(argv)
     origin = pd.Timestamp(a.origin)
-    d = out_dir(origin, a.nowcast, a.drop_provisional, a.bom_weights)
+    nowcast = not a.no_nowcast
+    d = out_dir(origin, nowcast, a.drop_provisional, a.bom_weights)
     print(f"backtest -> {d.relative_to(D.ROOT)}")
-    res, nowlog = run(origin, a.nowcast, a.drop_provisional, a.bom_weights)
+    res, nowlog, rebase = run(origin, nowcast, a.drop_provisional, a.bom_weights)
+    rebase.to_csv(d / "bom_rebase.csv", float_format="%.6f")
     res.to_csv(d / "backtest_predictions.csv", index=False)
     res[res.origin == origin].to_csv(d / "forecasts_at_origin.csv", index=False)
     if len(nowlog):
@@ -289,7 +307,7 @@ def main(argv=None):
     training_samples(res, origin).to_csv(d / "training_samples.csv")
     per, summ = score(res, d)
     if origin < P.CUTOFF:
-        hc = holdout_check(res, origin, a.bom_weights)
+        hc = holdout_check(res, origin, a.bom_weights, rebase)
         hc.to_csv(d / "holdout_check.csv", index=False, float_format="%.4f")
         print("held-back check (outcomes after the origin):")
         print(hc.groupby(["model", "h"]).agg(mae_pct=("error", lambda x: x.abs().mean()),

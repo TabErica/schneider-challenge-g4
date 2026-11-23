@@ -54,6 +54,6 @@ cb = fig.colorbar(im, ax=ax, shrink=0.6, pad=0.08)
 cb.set_label("error / naive error   (<1 = beats 'price stays the same')")
 title(ax, "Backtest 2020-2026: who beats the naive forecast?", pad=62)
 note(fig, 0.01, 0.0, "Rolling origins Jan-2020 to Sep-2026 minus h, data as of each origin; MAE of P50 relative to "
-         "random walk. Stainless 304 and market-price BOM: h + 1. Blue = better than naive, red = worse.",
+         "random walk. Stainless 304: missing month nowcast. Blue = better than naive, red = worse.",
      fontsize=7.5, color=MUTED)
 save(fig, "fig08_backtest_vs_naive.png")
