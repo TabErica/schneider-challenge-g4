@@ -1,4 +1,4 @@
-"""Run the pipeline: preprocess -> EDA -> risk EDA -> backtest -> sensitivity -> backtest chart -> diagrams.
+"""Run the pipeline: preprocess -> EDA -> risk EDA -> features (leakage test) -> backtest -> sensitivity -> backtest chart -> diagrams.
 
 Usage: python main.py [--origin YYYY-MM] [--skip-backtest] [--skip-sensitivity]
   --origin         forecast origin (default 2026-09, the data cutoff: the submission). An earlier origin (e.g. 2026-06)
@@ -25,7 +25,7 @@ if a.origin > CUTOFF:
     sys.exit(f"--origin {a.origin} is after the data cutoff {CUTOFF}")
 
 if a.origin == CUTOFF:
-    steps = [["preprocess.py"], ["eda.py"], ["eda_risk.py"], ["backtest.py"], ["sensitivity.py"],
+    steps = [["preprocess.py"], ["eda.py"], ["eda_risk.py"], ["features.py"], ["backtest.py"], ["sensitivity.py"],
              ["plot_backtest.py"], ["diagrams.py"]]
     if a.skip_backtest and (SRC.parent / "outputs/backtest/scores_per_series.csv").exists():
         steps = [s for s in steps if s[0] not in ("backtest.py", "sensitivity.py")]
