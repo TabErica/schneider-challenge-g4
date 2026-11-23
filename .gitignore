@@ -1,13 +1,34 @@
-# Challenge rule: never publish data files
+# Challenge rule: never publish data files. The pre-commit hooks block them too (.pre-commit-config.yaml).
 Data/
 *.csv
+*.tsv
 *.xlsx
+*.xls
+*.xlsm
 *.zip
+*.parquet
 *.pdf
 *.pptx
 *.png
+
+# Schneider-internal data and anything derived from it, wherever it lands:
+# CRU / MEPS licensed price levels (Europe Steel INDEXES), the internal BOM, supplier financials (PitchBook)
+*Steel INDEXES*
+*Steel_INDEXES*
+RM_Prices_XHEC_Challenge*
+bom_materials*
+bom_cost_table*
+Supplier_balancesheet*
+*PitchBook*
+*_forecast_*.csv
+
+# Every pipeline output (panel with CRU / MEPS levels, BOM cost tables, forecasts, charts)
 outputs/
+
+# OS / Python noise
 __pycache__/
+__MACOSX/
+.DS_Store
 
 # local only: slide builder
 src/build_eda_slides.py

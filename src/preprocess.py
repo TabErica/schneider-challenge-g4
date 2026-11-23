@@ -9,7 +9,13 @@ Steps, in this order (each one is written to transform_log.csv):
   6. derive    ss304_de = base + alloy surcharge (after the fill, so it uses the filled parts)
   7. fx        USD prices without an EUR twin -> EUR with the ECB monthly mean (S06, USD per 1 EUR)
 
-Outputs: panel_monthly.csv (month x series), series_catalog.csv (one row per series), transform_log.csv.
+Then, for forecasting (not a change of the panel; logged as "ragged_edge" / "provisional" rows):
+  8. ragged edge   relative lag of each series at the origin (months it lacks at Sep-2026); as_of() cuts every
+                   backtest origin by the same lag. Optional nowcast() fills stainless 304's missing month.
+  9. provisional   last PROVISIONAL_M months of the Eurostat PPIs are provisional at any origin
+
+Outputs: panel_monthly.csv (month x series), series_catalog.csv (one row per series), transform_log.csv,
+and ../assumptions.csv (every modelling assumption, from assumptions.py).
 Not in the panel: the price benchmark (yearly, see data.load_price_benchmark) and the BOM (data.load_bom).
 """
 from __future__ import annotations
@@ -17,12 +23,18 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+import assumptions as A
 import data as D
 
 OUT = D.OUT / "preprocessed"
 CUTOFF = pd.Timestamp("2026-09-01")  # last month used: data for Sep-2026 is the latest known at the origin
 DOWNLOAD = pd.Timestamp("2026-11-01")  # month the files were retrieved (data.zip README: 12 Nov 2026)
 MAX_GAP = 2  # months
+# Eurostat PPIs: the last PROVISIONAL_M months known at an origin may still be revised
+PROVISIONAL = ["S07", "S08", "S09", "S10", "S11", "E13", "E14", "E15", "E16"]
+PROVISIONAL_M = 2
+# Optional nowcast of a ragged-edge series: series -> regressors (monthly log changes, OLS)
+NOWCAST = {"ss304_de": ["S03_EUR", "S09"]}
 
 # (series, month, reason). Values are set to NaN, then the fill step interpolates them.
 CORRECTIONS = [
@@ -192,6 +204,7 @@ def convert_fx(p, log):
 def build_catalog(p, raw, meta, log):
     """One row per panel series: what it is, where it comes from, coverage, and what was done to it."""
     lg = log.frame()
+    rel = relative_lags(p)
     rows = []
     for c in p.columns:
         base = c[:-4] if c.endswith("_EUR") else c
@@ -212,6 +225,9 @@ def build_catalog(p, raw, meta, log):
             "last_in_file": last_raw,
             # Months between the last value in the file and the download month, minus one: a rough publication lag
             "lag_m": (DOWNLOAD.to_period("M") - last_raw.to_period("M")).n - 1 if last_raw is not None else None,
+            # Months the series lacks at the origin (CUTOFF): the lag as_of() applies at every backtest origin
+            "rel_lag_m": rel.get(c),
+            "provisional_m": PROVISIONAL_M if c in PROVISIONAL else 0,
         })
     cat = pd.DataFrame(rows)
     for c in ["first", "last", "last_in_file"]:
@@ -229,12 +245,14 @@ def build(save=True):
     p = derive(p, log)
     p = convert_fx(p, log)
     p.index.name = "month"
+    log_forecast_rules(p, log)
     cat = build_catalog(p, raw, meta, log)
     if save:
         OUT.mkdir(parents=True, exist_ok=True)
         p.to_csv(OUT / "panel_monthly.csv", float_format="%.10g")
         cat.to_csv(OUT / "series_catalog.csv", index=False)
         log.frame().to_csv(OUT / "transform_log.csv", index=False)
+        A.write(D.OUT / "assumptions.csv")
     return p, cat, log.frame()
 
 
@@ -246,14 +264,74 @@ def load():
     return pd.read_csv(f, index_col="month", parse_dates=["month"])
 
 
-def as_of(p, cat, origin):
-    """Panel as it could be seen at `origin`: each series cut `lag_m` months before it (lag from the catalog)."""
+def relative_lags(p):
+    """Months between CUTOFF and each series' last value in the panel `p` (the full panel, cut at CUTOFF).
+    0 = the series reaches the origin; stainless 304 = 1; E20 / E21 / ED06 = 2."""
+    return pd.Series({c: (CUTOFF.to_period("M") - p[c].last_valid_index().to_period("M")).n
+                      for c in p.columns if p[c].notna().any()}, dtype=int)
+
+
+def log_forecast_rules(p, log):
+    """Steps 8-9: record the relative lags and the provisional months (rules applied at forecast time)."""
+    for c, k in relative_lags(p).items():
+        if k:
+            log("ragged_edge", c, f"ends {p[c].last_valid_index():%Y-%m}, {k} month(s) before the origin "
+                f"{CUTOFF:%Y-%m}: as_of() cuts it {k} month(s) before every backtest origin; forecast from its last "
+                f"value (horizon h + {k})", k)
+    for c in PROVISIONAL:
+        if c in p:
+            log("provisional", c, f"last {PROVISIONAL_M} months at any origin flagged provisional (Eurostat revises); "
+                "kept in the baseline, dropped with backtest --drop-provisional", PROVISIONAL_M)
+
+
+def as_of(p, origin, lags=None, drop_provisional=False):
+    """Panel as it can be seen at `origin`: months after the origin removed, and each series cut by its relative
+    lag (`lags`, default relative_lags(p), so `p` must then be the full panel cut at CUTOFF). The same lag applies at
+    every origin, e.g. stainless 304 always ends one month before the origin.
+    drop_provisional=True also removes the last PROVISIONAL_M months of the PROVISIONAL series (sensitivity run)."""
     origin = pd.Timestamp(origin)
-    lag = cat.set_index("id")["lag_m"].fillna(0).clip(lower=0)
+    if origin > CUTOFF:
+        raise ValueError(f"origin {origin:%Y-%m} is after the data cutoff {CUTOFF:%Y-%m}")
+    lags = relative_lags(p) if lags is None else lags
     out = p.loc[:origin].copy()
     for c in out.columns:
-        out.loc[out.index > origin - pd.DateOffset(months=int(lag.get(c, 0))), c] = np.nan
+        k = int(lags.get(c, 0)) + (PROVISIONAL_M if drop_provisional and c in PROVISIONAL else 0)
+        if k:
+            out.loc[out.index > origin - pd.DateOffset(months=k), c] = np.nan
     return out
+
+
+def provisional_months(pt):
+    """{series: [months]} of the provisional values in an as_of() panel: the last PROVISIONAL_M known months."""
+    return {c: list(pt[c].dropna().index[-PROVISIONAL_M:]) for c in PROVISIONAL if c in pt and pt[c].notna().any()}
+
+
+def nowcast(pt, origin):
+    """Fill the ragged edge of every NOWCAST series up to `origin` in an as_of() panel (copy returned).
+
+    Each missing month m: log change of the series = OLS on the log changes of the regressors known at m, fitted on
+    every month (in the as_of() panel) where the series and those regressors have a change. Uses nothing after the
+    origin. Returns (panel, log rows)."""
+    origin = pd.Timestamp(origin)
+    pt, rows = pt.copy(), []
+    for s, regs in NOWCAST.items():
+        last = pt[s].last_valid_index()
+        for m in pd.date_range(last + pd.DateOffset(months=1), origin, freq="MS"):
+            use = [r for r in regs if pd.notna(pt.at[m, r]) and pd.notna(pt.at[m - pd.DateOffset(months=1), r])]
+            if not use:
+                break
+            d = np.log(pt[[s] + use]).diff()
+            fit = d.dropna()
+            X = np.column_stack([np.ones(len(fit)), fit[use].values])
+            beta, *_ = np.linalg.lstsq(X, fit[s].values, rcond=None)
+            r2 = 1 - ((fit[s].values - X @ beta) ** 2).sum() / ((fit[s] - fit[s].mean()) ** 2).sum()
+            change = float(beta[0] + d.loc[m, use].values @ beta[1:])
+            prev = pt.at[m - pd.DateOffset(months=1), s]
+            pt.at[m, s] = prev * np.exp(change)
+            rows.append({"origin": origin, "series": s, "month": m, "value": pt.at[m, s], "log_change": change,
+                         "regressors": "+".join(use), "beta": ";".join(f"{b:.4f}" for b in beta),
+                         "r2": round(float(r2), 4), "n_fit": len(fit)})
+    return pt, rows
 
 
 if __name__ == "__main__":

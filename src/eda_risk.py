@@ -59,7 +59,7 @@ CALM = ["2017-19 calm", "2023-25 normalisation"]
 def load():
     """Studied series (SERIES) on the common window, plus the cost tables needed for contributions."""
     c = P.load()
-    p = D.panel()
+    p = D.panel(window="common", trail_fill=D.TRAIL_FILL)  # EDA window, descriptive only
     df = c.join(p[BOM_MKT + BOM_PROXY]).loc[p.index[0]:p.index[-1], list(SERIES)]
     return df, c, D.bom_cost_table(c, c)
 
@@ -192,7 +192,7 @@ def cost_rises(df, cols=BOM_MKT + BOM_PROXY):
 def rise_contributions(prices, costs, h=3, top=3):
     """For the `top` largest h-month rises of each market-version index: percentage points from each material."""
     rows = []
-    for c, comp in D.bom_components(prices, costs, "market").items():
+    for c, comp in D.bom_components(prices, costs, "market", trail_fill=D.TRAIL_FILL).items():
         comp = comp.loc["2016-11":D.BOM_BASE]
         idx = comp.sum(axis=1)
         ch = (idx.shift(-h) / idx - 1).dropna()
@@ -330,7 +330,7 @@ def sum_of_quantiles(df, prices, costs, h=3):
     """Weighted sum of each material's P10 / P90 h-month change vs the P10 / P90 of the cost index itself
     (market version). Equal only if all materials always move together; the gap is why scenarios are needed."""
     rows = []
-    for c, comp in D.bom_components(prices, costs, "market").items():
+    for c, comp in D.bom_components(prices, costs, "market", trail_fill=D.TRAIL_FILL).items():
         comp = comp.loc["2016-11":D.BOM_BASE]
         w = comp.loc[D.BOM_BASE] / 100  # cost shares at the base month
         mat = {m: _market_col(costs, c, m) for m in comp.columns}

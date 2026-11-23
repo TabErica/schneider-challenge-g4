@@ -311,7 +311,7 @@ def benchmark_table(bm):
 
 def main():
     c = P.load()  # every source in one panel: cut at 2026-09, in EUR, typos corrected (coverage: series_catalog.csv)
-    p = D.panel()
+    p = D.panel(window="common", trail_fill=D.TRAIL_FILL)  # EDA window, descriptive only
     costs = D.bom_cost_table(c, c)
     costs.to_csv(OUT / "bom_cost_table.csv", index=False, float_format="%.4f")
     vol = volatility_by_horizon(p)

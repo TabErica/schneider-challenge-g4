@@ -1,6 +1,7 @@
 """Load every source as monthly series (raw files read in place, zips not extracted)."""
 from __future__ import annotations
 
+import functools
 import io
 import zipfile
 from pathlib import Path
@@ -8,27 +9,15 @@ from pathlib import Path
 import openpyxl
 import pandas as pd
 
+import targets as T  # target registry: the single source of what is forecast
+
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / "Data" / "Data"
 OUT = ROOT / "outputs"
 
-# Priceable BOM material proxies (BOM eu/ww series ids, licensed L-series excluded): id -> (name, family, region, unit)
-TARGETS = {
-    "D01": ("Copper (EUR/t)", "Base metals", "EU", "EUR/t"),
-    "S07": ("Copper PPI EU", "Base metals", "EU", "index"),
-    "S01": ("Copper (USD/t)", "Base metals", "WW", "USD/t"),
-    "D02": ("Aluminium (EUR/t)", "Base metals", "EU", "EUR/t"),
-    "S08": ("Aluminium PPI EU", "Base metals", "EU", "index"),
-    "S02": ("Aluminium (USD/t)", "Base metals", "WW", "USD/t"),
-    "S03": ("Nickel (USD/t)", "Base metals", "WW", "USD/t"),
-    "S05": ("Zinc (USD/t)", "Base metals", "WW", "USD/t"),
-    "S04": ("Iron ore (USD/t)", "Steel", "WW", "USD/t"),
-    "S09": ("Steel PPI EU", "Steel", "EU", "index"),
-    "S10": ("Steel PPI Germany", "Steel", "EU", "index"),
-    "S12": ("Steel PPI US", "Steel", "WW", "index"),
-    "S11": ("Plastics PPI EU", "Plastics", "EU", "index"),
-    "S13": ("Plastics PPI US", "Plastics", "WW", "index"),
-}
+# The 14 public-data series (S / D ids), derived from the registry: id -> (name, family, region, unit).
+# Kept for the EDA tables; forecasting code reads targets.REGISTRY.
+TARGETS = {i: (T.BY_ID[i].name, T.BY_ID[i].family, T.BY_ID[i].region, T.BY_ID[i].unit) for i in T.PUBLIC_IDS}
 DRIVERS = {"ED01": "Brent (EUR/bbl)", "ED02": "EU gas TTF (EUR/MWh)", "E09": "Power Germany (EUR/MWh)", "S06": "EUR/USD"}
 
 # BOM masses come from the standalone BOM workbook (Schneider-internal, never hard-coded). It replaces the older
@@ -52,7 +41,7 @@ BOM_BASE = pd.Timestamp("2026-09-01")
 # Market-price version of the BOM index (see bom_index): steel lines follow CRU EUR/t prices, not the Eurostat PPI
 MARKET_PROXY = {"Carbon steel": "cru_cr_de", "Stainless steel": "ss304_de", "Galvanised steel": "cru_hdg_de"}
 BOM_MKT = "_mkt"  # column suffix of the market version
-TRAIL_FILL = 2  # months a price may be carried forward at the end of its series to reach BOM_BASE
+TRAIL_FILL = 2  # EDA only: months a price may be carried forward to reach BOM_BASE (never for forecasting)
 
 
 def _read_zip_csv(zip_name, member, **kw):
@@ -150,14 +139,26 @@ def load_price_benchmark():
     return df[["id", "brand", "year", "p10", "p50", "p90"]].astype({"year": int})
 
 
-def eur_levels(rm, steel):
-    lv = {k: float(steel[k].dropna().loc[:BOM_BASE].iloc[-1]) for k in ["cru_cr_de", "cru_hdg_de", "ss304_de"]}
-    lv |= {k: float(rm.at[BOM_BASE, k]) for k in ["D01", "D02"]}
+LEVEL_IDS = ["cru_cr_de", "cru_hdg_de", "ss304_de", "D01", "D02"]
+
+
+def _latest(s, at):
+    """Latest published value of s at or before `at` (a value, not a fill of the series)."""
+    s = s.loc[:at].dropna()
+    if s.empty:
+        raise ValueError(f"{s.name}: no value at or before {at:%Y-%m}")
+    return float(s.iloc[-1])
+
+
+def eur_levels(rm, steel, at=BOM_BASE):
+    """EUR/t level of every BOM line at `at`: latest published value at or before `at` (stainless 304 at Sep-2026:
+    its Aug-2026 value), plus the assumed polymer levels."""
+    lv = {k: _latest(steel[k], at) for k in LEVEL_IDS[:3]} | {k: _latest(rm[k], at) for k in LEVEL_IDS[3:]}
     return lv | ASSUMED_PRICE_EUR_T
 
 
-def load_bom():
-    """Priceable BOM lines (kg per unit) from BOM_FILE, with the unlabelled-slice assumption applied."""
+@functools.lru_cache(maxsize=1)
+def _load_bom_cached():
     raw = pd.read_excel(BOM_FILE, sheet_name="BOM_Materials")
     raw = raw[raw["product_ref"].isin(PRODUCT_ID)]
     if set(raw["product_ref"]) != set(PRODUCT_ID):
@@ -175,8 +176,15 @@ def load_bom():
     return pd.DataFrame(rows)
 
 
-def bom_cost_table(rm, steel):
-    lv = eur_levels(rm, steel)
+def load_bom():
+    """Priceable BOM lines (kg per unit) from BOM_FILE, with the unlabelled-slice assumption applied."""
+    return _load_bom_cached().copy()
+
+
+def bom_cost_table(rm, steel, at=BOM_BASE):
+    """Cost of every BOM line at `at` (kg x EUR/t level) and its share of the product cost. at=BOM_BASE gives the
+    submission weights; at=<origin> gives the weights a buyer could compute at that origin."""
+    lv = eur_levels(rm, steel, at)
     b = load_bom()
     b["eur_per_unit"] = b["kg"] * b["level_src"].map(lv) / 1000
     df = b.groupby(["product", "material", "proxy"], as_index=False)[["kg", "eur_per_unit"]].sum()
@@ -185,38 +193,54 @@ def bom_cost_table(rm, steel):
     return df
 
 
-def _price_relative(prices, col):
-    """prices[col] / its BOM_BASE value. A market price that ends before BOM_BASE (ragged edge: stainless ends
-    Aug-2026) is carried forward at most TRAIL_FILL months, after its last value only."""
+def _mover(material, proxy, version):
+    """Price series that moves a BOM line in each index version."""
+    return MARKET_PROXY.get(material, proxy) if version == "market" else proxy
+
+
+def bom_refs(prices, costs, version="proxy", at=BOM_BASE):
+    """Reference value of every price that moves a BOM line: its latest published value at or before `at`."""
+    return {c: _latest(prices[c], at) for c in {_mover(r.material, r.proxy, version) for r in costs.itertuples()}}
+
+
+def _price_relative(prices, col, ref, trail_fill=0):
+    """prices[col] / ref. trail_fill > 0 (EDA only) carries a series that ends before BOM_BASE (ragged edge:
+    stainless ends Aug-2026) forward at most trail_fill months, after its last value only."""
     s = prices[col].loc[:BOM_BASE]
-    last = s.last_valid_index()
-    s = s.where(s.index <= last, s.ffill(limit=TRAIL_FILL))
-    if pd.isna(s.get(BOM_BASE)):
-        raise ValueError(f"{col}: no value at {BOM_BASE:%Y-%m} even after carrying forward {TRAIL_FILL} months")
-    return s / s.at[BOM_BASE]
+    if trail_fill:
+        last = s.last_valid_index()
+        s = s.where(s.index <= last, s.ffill(limit=trail_fill))
+        if pd.isna(s.get(BOM_BASE)):
+            raise ValueError(f"{col}: no value at {BOM_BASE:%Y-%m} even after carrying forward {trail_fill} months")
+    return s / ref
 
 
-def bom_components(prices, costs, version="proxy"):
+def bom_components(prices, costs, version="proxy", refs=None, trail_fill=0):
     """{index column: DataFrame month x material} of 100 x cost share x price relative. Rows sum to bom_index.
 
     version="proxy":  every line follows its BOM proxy; steel lines follow the Eurostat PPI (S09, S10).
     version="market": steel lines follow the CRU EUR/t price that also sets their weight (MARKET_PROXY), which is
                       the BOM file's first choice (L01-L03). Copper, aluminium and plastics are the same in both.
+    refs: reference value of each moving price (default: bom_refs at BOM_BASE). With costs and refs at BOM_BASE the
+    index is 100 in Sep-2026 when every input is published; the market version is NaN in Sep-2026 (stainless ends
+    Aug-2026) unless trail_fill (EDA only) carries it forward.
     Index column names: product id, plus BOM_MKT for the market version."""
+    refs = bom_refs(prices, costs, version) if refs is None else refs
     out = {}
     for prod, g in costs.groupby("product"):
         name = prod + (BOM_MKT if version == "market" else "")
         out[name] = pd.DataFrame({
             r.material: 100 * r.cost_share * _price_relative(
-                prices, MARKET_PROXY.get(r.material, r.proxy) if version == "market" else r.proxy)
+                prices, col := _mover(r.material, r.proxy, version), refs[col], trail_fill)
             for r in g.itertuples()})
     return out
 
 
-def bom_index(prices, costs, version="proxy"):
-    """Laspeyres material-cost index per product: fixed Sep-2026 cost shares (`costs`), Sep-2026 = 100.
+def bom_index(prices, costs, version="proxy", refs=None, trail_fill=0):
+    """Laspeyres material-cost index per product: fixed cost shares (`costs`), reference prices `refs`.
     NaN in a month where any material price is missing. See bom_components for the two versions."""
-    return pd.DataFrame({k: v.sum(axis=1, min_count=v.shape[1]) for k, v in bom_components(prices, costs, version).items()})
+    comp = bom_components(prices, costs, version, refs, trail_fill)
+    return pd.DataFrame({k: v.sum(axis=1, min_count=v.shape[1]) for k, v in comp.items()})
 
 
 def bom_label(sid):
@@ -225,12 +249,22 @@ def bom_label(sid):
     return f"BOM {prod} ({'market prices' if sid.endswith(BOM_MKT) else 'PPI proxy'})"
 
 
-def panel():
-    """Targets + both BOM indices + drivers, Nov-2016 .. Sep-2026, from the preprocessed panel."""
+def panel(window="full", trail_fill=0):
+    """Preprocessed series + both BOM indices (Sep-2026 weights).
+
+    window="full":   every series of the preprocessed panel with its full history (CRU from 2012, stainless from
+                     2008, Westmetall from 2016-01, epoxy from 2018-01), up to Sep-2026. For forecasting.
+    window="common": the EDA panel: the 14 public targets, both BOM indices and the drivers, Nov-2016 .. Sep-2026.
+    trail_fill: months a BOM input may be carried forward to Sep-2026. EDA only (data.TRAIL_FILL); 0 = no fill,
+                so the market-price indices end Aug-2026 with stainless."""
     import preprocess as P  # local import: preprocess imports this module
 
     c = P.load()
     costs = bom_cost_table(c, c)
-    df = c[list(TARGETS)].join([bom_index(c, costs, "proxy"), bom_index(c, costs, "market"),
-                                c[[d for d in DRIVERS if d != "S06"] + ["S06"]]])
+    bom = [bom_index(c, costs, v, trail_fill=trail_fill) for v in ("proxy", "market")]
+    if window == "full":
+        return c.join(bom).loc[:BOM_BASE]
+    if window != "common":
+        raise ValueError(f"window must be 'full' or 'common', not {window!r}")
+    df = c[list(TARGETS)].join(bom + [c[[d for d in DRIVERS if d != "S06"] + ["S06"]]])
     return df.loc[c["D01"].first_valid_index():BOM_BASE]
