@@ -14,6 +14,11 @@ repos:
         language: fail
         entry: "Data files must not be committed. Keep them in Data/ (git-ignored)."
         files: '(?i)\.(csv|tsv|xlsx|xlsm|xls|zip|parquet|feather|pkl|pickle|pdf|pptx|png|jpe?g)$'
+      - id: no-internal-data
+        name: no Schneider-internal data (CRU / MEPS levels, BOM, supplier financials)
+        language: fail
+        entry: "Internal data must not be committed (Steel INDEXES, BOM workbook, supplier files, outputs/)."
+        files: '(?i)(steel.?indexes|rm_prices_xhec|bom_materials|bom_cost_table|supplier_balancesheet|pitchbook|^outputs/|^data/|__macosx|\.ds_store$)'
 
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0

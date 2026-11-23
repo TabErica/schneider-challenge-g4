@@ -4,16 +4,24 @@ Forecast the raw-material prices behind the RM6 and RM AirSeT RMUs at **+3 / +6 
 BOM cost index, then into ETO quote rules and an SF6-free migration strategy.
 
 > **Data is not in this repo** (challenge rule). `Data/`, all `csv/xlsx/zip/pdf/pptx/png` files and `outputs/`
-> are git-ignored.
+> are git-ignored, and two pre-commit hooks refuse them (see §3). Schneider-internal files (CRU / MEPS price levels,
+> the BOM, supplier financials) and every output derived from them must never be committed.
 
 ## Setup
 
 ### 1. Data
 
-Put the challenge files, unchanged, in `Data/Data/`: `data.zip` (read in place; an already-extracted `Data/Data/data/`
-folder also works), `Copia de Europe Steel INDEXES.xlsx`, `Epoxy for student.xlsx`,
-`LME_Copper_Aluminium_EU_Monthly_2016_2026.xlsx`, `RMU_IQI_EU_Price_Benchmark_2017-2026_Synthetic.xlsx`, and the
-standalone BOM workbook `RM_Prices_XHEC_Challenge.xlsx` (BOM_Materials sheet; it replaces the older BOM in `data.zip`).
+Put the challenge files, unchanged, in `Data/Data/` (git-ignored; nothing in it is ever committed):
+
+| File | Content | Status |
+|---|---|---|
+| `data.zip` (or its extracted `data/` folder) | Public prices and energy (IMF, Eurostat, ECB, BLS, Ember, ...) | public, challenge data |
+| `LME_Copper_Aluminium_EU_Monthly_2016_2026.xlsx` | Westmetall LME cash / 3-month / stocks | challenge data |
+| `Epoxy for student.xlsx` | Epoxy cost build-up (benzene, acetone, ECH, epoxy) | challenge data |
+| `RMU_IQI_EU_Price_Benchmark_2017-2026_Synthetic.xlsx` | Synthetic RMU selling prices | challenge data |
+| `Copia de Europe Steel INDEXES.xlsx` | CRU / MEPS EUR/t steel prices | **internal, licensed** |
+| `RM_Prices_XHEC_Challenge.xlsx` (standalone) | BOM_Materials sheet (replaces the older BOM in `data.zip`) | **internal** |
+| `Supplier_balancesheet.zip` | Supplier financials (PitchBook) | **internal**, not used yet |
 
 ### 2. Python environment (uv)
 
@@ -25,8 +33,11 @@ The environment is managed with [uv](https://docs.astral.sh/uv/). `pyproject.tom
 curl -LsSf https://astral.sh/uv/install.sh | sh     # or: brew install uv
 
 uv sync                         # creates .venv/ with the exact locked versions (downloads Python 3.12 if needed)
-uv run python main.py           # ~2 min; --skip-backtest reuses existing backtest results
-uv run python src/preprocess.py # any single step
+uv run python main.py                   # everything, origin Sep-2026: ~2 min with cached sensitivity, ~8 min without
+uv run python main.py --skip-sensitivity  # skip the sensitivity variants; --skip-backtest also reuses the baseline
+uv run python main.py --origin 2026-06  # held-back check: forecasting path only, data as of Jun-2026
+uv run python src/preprocess.py         # any single step
+uv run python src/backtest.py --help    # options (--no-nowcast, --drop-provisional, --bom-weights origin)
 ```
 
 Data-quality checks: open `notebooks/01_data_quality.ipynb` in VS Code with the `.venv` kernel (`uv sync` installs it).
@@ -51,6 +62,7 @@ uv run pre-commit run --all-files  # optional: run them on the whole repo now
 |---|---|
 | `nbstripout` | Removes outputs and execution counts from committed notebooks |
 | `no-data-files` | Blocks `csv / xlsx / zip / parquet / pdf / pptx / png / jpg` files, even when forced with `git add -f` |
+| `no-internal-data` | Blocks any path naming internal data (Steel INDEXES, BOM workbook / tables, supplier / PitchBook files, `outputs/`, `Data/`, `__MACOSX`, `.DS_Store`) |
 | `pre-commit-hooks` | Large files (> 1 MB), merge-conflict markers, YAML / TOML syntax, end-of-file and trailing whitespace |
 
 If a hook changes a file (e.g. strips a notebook), the commit stops: check the change, `git add` it and commit again.
@@ -61,19 +73,24 @@ nbstripout also clears the outputs in your local copy, so run the notebook again
 
 ### 4. Outputs
 
-Outputs: `outputs/preprocessed/` (clean panel, series catalog, transformation log), `outputs/eda/` (charts, tables)
-and `outputs/backtest/` (predictions, scores).
+Outputs: `outputs/assumptions.csv` (every modelling assumption, see below), `outputs/preprocessed/` (clean panel,
+series catalog with relative lags and provisional months, transformation log), `outputs/eda/` (charts, tables) and
+`outputs/backtest/` (predictions, forecasts at the origin, scores, training sizes, `sensitivity.csv`; one sub-folder
+per sensitivity variant or held-back origin).
 `DECK=1` renders charts in slide style to `outputs/slides/`. Colours: **RM6 green `#16884A`, RM AirSeT blue `#3478B8`**.
 
 | File | Role |
 |---|---|
-| `src/data.py` | Reads every source as published; targets; BOM (from `data.zip` or its extracted folder); BOM cost index in two versions (PPI proxy, market prices) |
-| `src/preprocess.py` | One monthly panel: month-start dates, cut at Sep-2026, typo corrections, gap fill, USD → EUR. Writes `panel_monthly.csv`, `series_catalog.csv`, `transform_log.csv` |
+| `src/targets.py` | **Target registry**: the one list of what is forecast (id, name, family, region, unit, material / bom_index, in_submission, history_start). Every forecasting script reads it |
+| `src/assumptions.py` | Every modelling assumption (A01–A13) → `outputs/assumptions.csv` |
+| `src/data.py` | Reads every source as published; BOM (from the standalone workbook); BOM cost index in two versions (PPI proxy, market prices), with weights and references at any date; `panel()` keeps each series' full history |
+| `src/preprocess.py` | One monthly panel: month-start dates, cut at Sep-2026, typo corrections, gap fill, USD → EUR. Writes `panel_monthly.csv`, `series_catalog.csv`, `transform_log.csv`. `as_of()` = the panel as seen at an origin (relative ragged edge, optional provisional drop); `nowcast()` = stainless fill of the missing month (on by default) |
 | `notebooks/01_data_quality.ipynb` | Coverage, missing values, wrong values, derived-column checks, IMF vs Westmetall, steel PPI vs CRU / MEPS |
 | `src/eda.py` | Price families, key material prices, BOM cost index and cost per unit, cost structure, volatility by horizon, price benchmark (figures and the tables behind them) |
 | `src/eda_risk.py` | Risk EDA: unit roots, fat tails, volatility clustering, band coverage, cost-index rises (3/6/9 m) and their drivers, regimes, correlations (fig11–fig15, `risk_*.csv`) |
 | `notebooks/02_eda_risk.ipynb` | Conclusions of the EDA: risk (§1–4), key prices, cost per unit, risk by horizon, supply-chain links, selling-price benchmark (§5–9) |
-| `src/backtest.py` | Rolling backtest Jan-2020 → Sep-2026: naive, drift, ETS, Ridge, global GBM; P10/P50/P90 |
+| `src/backtest.py` | Rolling backtest Jan-2020 → origin: naive, drift, ETS, Ridge, global GBM; P10/P50/P90; data as of each origin (`as_of`); BOM indices rescaled to origin = 100; options `--origin`, `--no-nowcast`, `--drop-provisional`, `--bom-weights` |
+| `src/sensitivity.py` | Backtest variants against the baseline (no nowcast, provisional dropped, origin BOM weights) → `sensitivity.csv`; a variant is re-run only when its inputs change (cache key) |
 | `src/plot_backtest.py` | Error relative to naive per series / model / horizon |
 | `src/diagrams.py` | Production chain (predictive links, `link_table`) and methodology diagrams |
 
@@ -95,6 +112,29 @@ and `outputs/backtest/` (predictions, scores).
 - **Correlations double in stress** (mean pairwise 0.22 calm vs 0.45 in 2020-22): the cost P10 / P90 needs joint
   scenarios; summing material quantiles is off by 15–36%.
 
+### Backtest on data as of each origin (22 submitted targets + 3 epoxy inputs)
+
+- **Refactor checked**: on the 16 original series, naive / drift / ETS / Ridge predictions are identical to the
+  previous backtest (same data at every origin); only the global GBM moves, because its pool now has 25 series.
+- **Baseline = stainless nowcast on** (A05): every submitted target is forecast from the origin month (h_eff = h),
+  and the BOM indices are scaled to origin = 100 (A14; market version ×1.0004 / ×1.0008, PPI proxy ×1).
+- **New targets are hard**: on the CRU CR / HDG coil prices, ETS is 8–10% *worse* than naive at 3 months and
+  34–43% worse at 6–9 months (momentum then sharp reversals), and the naive 80% band covers only 58–63% even with
+  history from 2012. Stainless 304 is the one new market price where ETS beats naive (rel. MAE 0.91–0.97).
+  Epoxy: ETS 0.92 at 3 months. Market-price BOM indices: no model clearly beats naive; ETS ≈ naive for RM6
+  (1.00–1.06), 4–18% worse for AirSeT.
+- **Sensitivities** (`outputs/backtest/sensitivity.csv`; variants are cached and re-run only when their inputs change):
+  - *No nowcast* (stainless and the market-price BOM from t - 1, h + 1): MAPE rises by 0.1–2.2 points
+    (e.g. RM6 market BOM, 3 months: 7.8% → 9.1%), which is why the nowcast is the baseline.
+  - *Dropping the provisional Eurostat months* moves the anchor of S07–S11 and the PPI-proxy BOM back 2 months
+    (h_eff 3 → 5, 6 → 8, 9 → 11). Their 2–3 point higher 3-month MAPE (S09 ETS: 3.7% → 6.5%) is mostly the longer
+    horizon, **not** revision risk. Revision risk cannot be measured here: the files hold only the latest Eurostat
+    vintage (A06). The baseline keeps the provisional months.
+  - *Origin BOM weights*: changes MAPE by < 0.3 point and 80% coverage by at most 3 points; the Sep-2026 weights add
+    no material look-ahead.
+- **Held-back origin Jun-2026** (3 months → Sep-2026, 22 series with a Sep-2026 outcome): every model is within ±1
+  point of naive's 6.3% error; 80% coverage 77–91% on this single, calm quarter (too few points to rank models).
+
 ## Next steps
 
 1. Forecast CSV `<team>_forecast_202609.csv`: per-series model choice by backtest, calibrated intervals (wider,
@@ -102,21 +142,39 @@ and `outputs/backtest/` (predictions, scores).
 2. Market prices: LME 3-month forward and the Oct-2026 analyst view as P50 adjustments.
 3. Indices: add only the upstream drivers that predict 3 months ahead (a Ridge with all drivers did not beat naive).
 4. Pretrained model (Chronos-Bolt) as a benchmark.
-5. Publication lags in the backtest: `preprocess.as_of()` cuts each series by its lag (`lag_m` in `series_catalog.csv`).
+5. ~~Publication lags in the backtest~~ done: `preprocess.as_of()` cuts every origin by the relative lag (`rel_lag_m`).
 6. Business layer: joint scenarios (resample whole months) → BOM cost (market-price index) → margin at risk → quote rule.
 
 ## Assumptions and limits
 
-- BOM from the standalone `RM_Prices_XHEC_Challenge.xlsx`; the older BOM in `data.zip` (`bom_materials.csv`) is not
-  used. RM6 largest unlabelled slice = carbon steel at 45% of the implied mass (the share the older BOM label gave);
-  polymer EUR/t assumed (`src/data.py`).
-- BOM index: fixed Sep-2026 weights. Two versions: steel lines follow the EU / German steel PPI (S09 / S10, the BOM
-  fallback) or the CRU EUR/t prices (`*_mkt`, the BOM's first choice). Stainless 304 ends Aug-2026 and is carried to
-  Sep-2026 in the market version.
-- Backtest assumes month-t data is known at origin t.
+Every assumption is in `src/assumptions.py`, written to `outputs/assumptions.csv` by `preprocess.py`; each data
+transformation is a row of `outputs/preprocessed/transform_log.csv` (steps calendar, cutoff, drop, correct, fill,
+derive, fx, ragged_edge, provisional).
+
+| id | area | assumption | where |
+|---|---|---|---|
+| A01 | data | Forecast origin = Sep-2026 = last month of data used. Values after Sep-2026 (Oct-2026 FX, power, CRU, MEPS, epoxy, Westmetall) are dropped before any other step and never used, also not as a nowcast input. | `preprocess.CUTOFF` |
+| A02 | data | Ragged edge, relative to the origin: at every backtest origin each series is cut by the number of months it lacks at the real origin (stainless 304 and its parts: 1, E20 / E21 / ED06: 2, all others: 0). | `preprocess.relative_lags, preprocess.as_of` |
+| A03 | data | A target whose last value is before the origin is forecast from its last value: the effective horizon is h + lag. With the default stainless nowcast (A05) every submitted target is known at the origin (h_eff = h); the sensitivity variant --no-nowcast forecasts stainless 304 and the market-price BOM indices from t - 1 (h + 1). | `backtest.run` |
+| A04 | data | No forward fill in any data used for forecasting. data.TRAIL_FILL (carry stainless Aug-2026 to Sep-2026) is kept only for the descriptive EDA charts and tables. | `data.panel(trail_fill=...)` |
+| A05 | data | Stainless 304 nowcast, ON by default (baseline and submission): the missing month(s) at an origin are filled with an OLS of its monthly log change on nickel in EUR (S03_EUR) and the EU steel PPI (S09), fitted on the months known at that origin; uses nothing after the origin. Chosen because the backtest showed lower errors for stainless and the market-price BOM with no leakage. Each fill is logged (nowcast_log.csv); --no-nowcast is the sensitivity variant. | `preprocess.nowcast, backtest --no-nowcast` |
+| A06 | data | Eurostat PPIs (S07-S11, E13-E16): the last 2 months known at an origin are provisional (Eurostat revises them); they are flagged and kept in the baseline. Revision risk is NOT measured: the files hold only the latest vintage, so the backtest sees revised values (optimistic by an unknown amount). The --drop-provisional variant removes those months, which moves the anchor back 2 months (h_eff = h + 2): its higher error reflects the longer horizon, not revisions. | `preprocess.PROVISIONAL, backtest --drop-provisional` |
+| A07 | model | Univariate models use each target's full history (CRU from 2012, stainless from 2008, epoxy from 2018); models with drivers use the months where every input is known. | `targets.py, backtest.py` |
+| A08 | BOM | RM6 largest unlabelled slice = carbon steel at 45% of the implied mass (the share the older BOM label gave). | `data.ASSUMED_UNLABELLED_SHARE` |
+| A09 | BOM | Polymer levels assumed at 1 300 EUR/t (PET) and 2 700 EUR/t (engineering plastics), constant over time (also for origin weights). | `data.ASSUMED_PRICE_EUR_T` |
+| A10 | BOM | Submission BOM indices: Sep-2026 base (Schneider's common base). Cost shares = kg x latest published EUR/t at or before Sep-2026 (stainless 304: Aug-2026). | `data.bom_cost_table, data.bom_index` |
+| A11 | BOM | Backtest option --bom-weights origin: cost shares from the prices known at each origin (kg x latest EUR/t at or before the origin) instead of Sep-2026 shares, to measure the look-ahead in the fixed weights. Not used for the submission. | `backtest --bom-weights` |
+| A12 | BOM | Fixed quantities (kg per unit) over the whole period: no design or sourcing change. | `data.load_bom` |
+| A13 | data | ECH and epoxy May-2026 are a decimal-shift typo: set to NaN, then log-linear interpolation. | `preprocess.CORRECTIONS` |
+| A14 | BOM | Submitted BOM indices are scaled so that the origin month = 100 (format 'index (origin = 100)'): one constant per index, from its value in the origin month as seen at the origin (market version: with the nowcast stainless value). The PPI-proxy index is already 100 in Sep-2026 (factor 1). A constant changes no log change and no cost share. Factors in bom_rebase.csv; with --no-nowcast the market version keeps factor 1. | `backtest.Bom.rebase` |
+
+Limits:
+- BOM from the standalone `RM_Prices_XHEC_Challenge.xlsx`; the older BOM in `data.zip` (`bom_materials.csv`) is not used.
+- No data vintages: the backtest sees today's (revised) values of past months, so it is optimistic for the Eurostat
+  PPIs by an amount that cannot be measured with these files (A06). The drop-provisional variant does not measure it.
 - Price benchmark is synthetic and not like-for-like (Xiria 630 A / 21 kA vs RM6 400 A / 12.5 kA).
-- Epoxy file: ECH (and so epoxy) May-2026 is a typo, about 10× too low; set to NaN and interpolated (`preprocess.py`).
-- Publication lags in `series_catalog.csv` are rough: read from the last month in each file at the Nov-2026 download.
+- Rough publication lags (`lag_m` in `series_catalog.csv`, from the Nov-2026 download) are informative only; the
+  backtest uses the relative lag at the origin (`rel_lag_m`).
 
 ## AI-tool disclosure
 
