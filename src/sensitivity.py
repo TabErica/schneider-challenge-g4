@@ -6,7 +6,8 @@ Each variant changes one choice against the baseline (backtest.py with no option
                        (h_eff = h + 2), so this measures the cost of an older anchor, not revision risk: without
                        Eurostat vintages the size of revisions cannot be measured (assumption A06)
   bom_weights_origin   BOM cost shares from the prices known at each origin, not the Sep-2026 shares
-sensitivity.csv: rel. MAE vs naive, MAPE, 80% coverage and h_eff of the series each variant touches, baseline vs variant.
+sensitivity.csv: rel. MAE vs naive, MAPE, 80% coverage and h_eff of the series each variant touches, baseline vs variant,
+for the labels in MODELS. Variants run only RUN_MODELS (fast point models; every interval method).
 Run after backtest.py (reads the baseline scores).
 
 Cache: a variant is re-run only when its inputs change. The key hashes the preprocessed panel, the BOM workbook, the
@@ -30,14 +31,18 @@ VARIANTS = {  # name -> (backtest arguments, series the variant is about)
                                                   "RM6_NE_IQI_433520", "RMAirSeT_IIQ_24kV"]),
     "bom_weights_origin": (["--bom-weights", "origin"], B.BOM_IDS),
 }
-MODELS = ["naive", "ets_local", "ridge_local", "gbm_global"]
-CODE = ["backtest.py", "preprocess.py", "data.py", "targets.py"]
+# Variants run a fast subset of point models (no GBM, no AutoARIMA); every interval method is kept
+RUN_MODELS = ["naive", "ets_local", "auto_ets", "theta", "combo_mean"]
+MODELS = ["naive+emp", "ets_local+emp", "auto_ets+emp", "theta+emp", "combo_mean+emp", "ets_local+conf",
+          "ets_local+aci", "ets_local+ewma"]
+CODE = ["backtest.py", "preprocess.py", "data.py", "targets.py", "scoring.py", "models/__init__.py", "models/base.py",
+        "models/classic.py", "models/sf.py", "models/combo.py", "models/lme.py", "models/intervals.py"]
 
 
 def cache_key(args):
     h = hashlib.sha256()
     for f in [P.OUT / "panel_monthly.csv", D.BOM_FILE] + [D.ROOT / "src" / c for c in CODE]:
-        h.update(f.name.encode() + f.read_bytes())
+        h.update(str(f.relative_to(D.ROOT)).encode() + f.read_bytes())
     h.update(" ".join(args).encode())
     return h.hexdigest()
 
@@ -50,7 +55,7 @@ def variant_scores(name, args, force=False):
         print(f"=== variant {name}: cached ({kf.relative_to(D.ROOT)}) ===", flush=True)
         return pd.read_csv(sf)
     print(f"\n=== variant {name} ===", flush=True)
-    B.main(args)
+    B.main(args + ["--models", ",".join(RUN_MODELS)])
     kf.write_text(key + "\n")
     return pd.read_csv(sf)  # same rounding whether cached or fresh, so sensitivity.csv does not depend on the cache
 
@@ -71,8 +76,9 @@ def main(argv=None):
     tab = pd.concat([compare(base, variant_scores(name, args, a.force), series, name)
                      for name, (args, series) in VARIANTS.items()])
     tab.to_csv(B.OUT / "sensitivity.csv", index=False, float_format="%.4f")
-    show = tab[tab.model.isin(["naive", "ets_local"])].copy()
+    show = tab.copy()
     print("\nMAPE, 80% coverage and h_eff, baseline -> variant (naive and ETS):")
+    show = show[show.model.isin(["naive+emp", "ets_local+emp"])]
     print(show.pivot_table(index=["variant", "series", "model"], columns="h",
                            values=["mape_base", "mape_variant", "coverage80_base", "coverage80_variant",
                                    "h_eff_variant"]).round(3).to_string())
