@@ -195,6 +195,14 @@ summary / family × period, `best_by_family.csv`, `quote_basis.csv`, `aci_gamma.
 - Bands: around the family models, ewma / aci give the same coverage pattern as around the univariate models
   (ARDL + ewma 82 / 82 / 74%).
 - Runtime: the six family models add about 3 minutes to the backtest (Ridge with CV 99 s, GBM 72 s).
+- **Deviations from the step-3 plan** (not expected to change the result: Ridge already shrinks most indicator
+  coefficients towards 0):
+  - Lags: nickel uses this and last month's change (plan: 1-2 months); TTF and power use the 3-month change up to
+    the anchor (plan: 1-month lag); Brent uses the 3-month change up to the anchor, i.e. lags 0-2 (plan: 1-3). For a
+    forecast from the anchor, the latest month's move is the part that passes through over the next months, so it
+    is kept.
+  - The error-correction term log(S09) - b log(CRU) is used in `ecm` only, not as an ARDL / Ridge regressor.
+  - ARDL in direct form only (no ARIMAX); the optional USD price × EUR/USD split is not built.
 - **Consequence for the submission**: keep univariate P50s (naive / damped ETS / combo_mean per family). The family
   models stay in the backtest as documented evidence; VECM / ECM on the steel PPI and epoxy_struct are the only
   candidates worth an ensemble slot in step 5.
