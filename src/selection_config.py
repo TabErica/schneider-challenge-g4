@@ -62,10 +62,15 @@ MIN_ERRORS = 12
 # ASYM_GRID whose share of outcomes above P90 is <= ASYM_TARGET_ABOVE, on the origins of 2020-01..2023-06 whose
 # outcome is published by ASYM_TUNE_BY (= first origin of the second period). So the second period tests k out of
 # sample; the first-period coverage of a "_up" band is in sample.
-BASE_METHODS = ("emp", "conf", "aci", "ewma")
+# ewmap (pooled residuals, faster EWMA) added after an offline check: around naive it gave 71 / 70 / 68% coverage in
+# 2020-01..2023-06 and 86 / 85 / 90% after (ewma: 69 / 67 / 61% and 88 / 90 / 95%).
+# k is capped at ASYM_K_MAX: k multiplies a LOG distance, so k = 3 at 6-9 months turned P90 into +120% (copper) to
+# +475% (plastics PPI) at Sep-2026, far beyond any 9-month move in the data. The cap keeps "_up" a skew, not a blow-up.
+BASE_METHODS = ("emp", "conf", "aci", "ewma", "ewmap")
 UP = "_up"
 METHODS = BASE_METHODS + tuple(m + UP for m in BASE_METHODS)
-ASYM_GRID = np.round(np.arange(1.0, 3.0001, 0.05), 2)
+ASYM_K_MAX = 1.5
+ASYM_GRID = np.round(np.arange(1.0, ASYM_K_MAX + 0.0001, 0.05), 2)
 ASYM_TARGET_ABOVE = 0.10
 ASYM_TUNE_BY = pd.Timestamp("2023-07-01")
 

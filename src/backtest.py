@@ -158,6 +158,7 @@ def run(origin=P.CUTOFF, nowcast=True, drop_provisional=False, bom_weights="base
                     clock[m.name] += time.perf_counter() - c
                     ctx.q50[m.name, s] = {h: p.q50 for h, p in preds[m.name].items()}
             sigma = intervals.ewma_sigma(hist)
+            sigma_fast = intervals.ewma_sigma(hist, intervals.POOL_LAMBDA)
             lv = pt[s].loc[:a]
             for h in HORIZONS:
                 target = t + pd.DateOffset(months=h)
@@ -168,6 +169,7 @@ def run(origin=P.CUTOFF, nowcast=True, drop_provisional=False, bom_weights="base
                 lo, hi = empirical_spread(ctx.ys(s, he))
                 meta = {"series": s, "h": h, "h_eff": he, "origin": t, "anchor": a, "y_t": y_a, "actual": y_true,
                         "anchor_provisional": a in prov.get(s, []), "emp_lo": lo, "emp_hi": hi, "sigma": sigma,
+                        "sigma_fast": sigma_fast,
                         "mase_scale": (lv.shift(-he) - lv).abs().mean(),
                         "reveal": target + pd.DateOffset(months=data_lag[s])}
                 for name, ph in preds.items():

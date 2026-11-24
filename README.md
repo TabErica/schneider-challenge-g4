@@ -93,7 +93,7 @@ summary / family × period, `best_by_family.csv`, `quote_basis.csv`, `aci_gamma.
 target, input hash and step; reused only for an identical input). `backtest_warmup.csv`: point forecasts of the
 2018-19 warm-up origins (input of the rolling selection).
 `outputs/selection/` (`selection.py`): `candidates.csv`, `selected_choices.csv` (the rolling rule's choice at every
-origin), `asym_k.csv`, `selection_report.csv`, `selection_summary.csv`, `interval_choice.csv`, `submission_models.csv`.
+origin), `asym_k.csv`, `selection_report.csv`, `selection_summary.csv`, `interval_choice.csv`, `submission_models.csv`, `band_plausibility.csv`.
 `DECK=1` renders charts in slide style to `outputs/slides/`. Colours: **RM6 green `#16884A`, RM AirSeT blue `#3478B8`**.
 
 | File | Role |
@@ -107,7 +107,7 @@ origin), `asym_k.csv`, `selection_report.csv`, `selection_summary.csv`, `interva
 | `src/eda_risk.py` | Risk EDA: unit roots, fat tails, volatility clustering, band coverage, cost-index rises (3/6/9 m) and their drivers, regimes, correlations (fig11–fig15, `risk_*.csv`) |
 | `notebooks/02_eda_risk.ipynb` | Conclusions of the EDA: risk (§1–4), key prices, cost per unit, risk by horizon, supply-chain links, selling-price benchmark (§5–9) |
 | `src/backtest.py` | Rolling backtest, warm-up Jan-2018, scored Jan-2020 → origin: loops over the model registry (point pass), then the interval layer; data as of each origin (`as_of`); BOM indices rescaled to origin = 100; options `--origin`, `--no-nowcast`, `--drop-provisional`, `--bom-weights`, `--models` |
-| `src/models/` | One interface (`base.py`: origin context in, log-return quantiles out). `classic.py` naive / drift / damped ETS / Ridge / global GBM (the first backtest, unchanged); `sf.py` AutoETS, AutoARIMA, Theta, OptimizedTheta (statsforecast); `combo.py` mean(naive, AutoETS), median(naive, AutoETS, Theta, AutoARIMA); `lme.py` LME 3-month price as P50 + quote-basis table; `intervals.py` emp / split conformal / ACI / EWMA-scaled bands around any point model; `multi.py` family models with leading indicators: ARDL, Ridge (time-series CV alpha), ECM (steel PPI ← CRU), VECM chain (iron ore → CRU CR → S09, Johansen), slim global quantile GBM shrunk to naive, epoxy structural model, and the comparison with the best univariate model |
+| `src/models/` | One interface (`base.py`: origin context in, log-return quantiles out). `classic.py` naive / drift / damped ETS / Ridge / global GBM (the first backtest, unchanged); `sf.py` AutoETS, AutoARIMA, Theta, OptimizedTheta (statsforecast); `combo.py` mean(naive, AutoETS), median(naive, AutoETS, Theta, AutoARIMA); `lme.py` LME 3-month price as P50 + quote-basis table; `intervals.py` emp / split conformal / ACI / EWMA-scaled / pooled EWMA-scaled (`ewmap`) bands around any point model; `multi.py` family models with leading indicators: ARDL, Ridge (time-series CV alpha), ECM (steel PPI ← CRU), VECM chain (iron ore → CRU CR → S09, Johansen), slim global quantile GBM shrunk to naive, epoxy structural model, and the comparison with the best univariate model |
 | `src/models/fm.py` | Chronos-2 (pretrained foundation model, zero-shot, CPU): univariate and with past covariates (sources of the step-3 leading indicators), forecast cache keyed by input hash, input leakage check, comparison with naive / best univariate / best multivariate by family, raw vs calibrated bands, runtime |
 | `src/features.py` | Leading indicators of the family models (1-4 per target, each with an economic reason) → `outputs/features/feature_availability.csv` (source, transformation, lag vs the origin, first month, meaning); **leakage test** (every design row at every origin rebuilt from the panel as seen at the origin = full-panel row); epoxy identity check (`epoxy_identity.csv`) |
 | `src/scoring.py` | Scores: rel. MAE, MASE, pinball, coverage (above / below), width, Winkler, Diebold-Mariano vs naive with Benjamini-Hochberg q values (significance = q < 0.05); by family × period (2020-01..2023-06, 2023-07..end, 2022 alone, all); best point model and band per family × horizon |
@@ -318,11 +318,34 @@ period: geometric-mean MAE / naive, BH q, coverage with the shares above / below
   rows (base metals and steel at 3 months, BOM indices at 3 and 6 months), naive on 43 (plastics at 9 months chose
   the `selected` strategy, whose rule picks naive at Sep-2026). Bands: ewma_up 39, ewma 16, emp_up 10, conf_up 1.
 
+- **Pooled bands and a cap on k** (A38, A39; `ewmap`, `ASYM_K_MAX = 1.5`, `band_plausibility.csv`). Two problems of
+  the band rule above: per-target residual pools have a few dozen points, so their tails miss the stress months of
+  the other targets; and k multiplies a *log* distance, so k = 3 at 6–9 months turned P90 at Sep-2026 into +100–490%
+  (plastics PPI S11 +492%, US steel PPI +404%, AirSeT market index +214%), far beyond any move of that length in the
+  data. `ewmap` pools the standardised residuals of every target of a point model (faster EWMA, lambda 0.8) and k is
+  capped at 1.5. Same backtest, old vs new rules (run without the Chronos-2 cache, so chronos2 is not a candidate in
+  either):
+
+  | | old rules | new rules |
+  |---|---|---|
+  | family × h cells with a band within [0.70, 0.90] in both periods | 4 / 15 | 9 / 15 |
+  | submitted P90 above the largest past rise of the same length (Sep-2026) | 38 / 66 | 15 / 66 |
+  | P90 at 9 months: S11 / S12 / AirSeT market index | +492 / +404 / +214% | +81 / +124 / +31% |
+  | worst Winkler of a chosen band (steel 9 m) | 312 | 7.4 |
+  | chosen bands | ewma_up 39, ewma 16, emp_up 10, conf_up 1 | ewmap_up 31, ewmap 16, ewma 12, ewma_up 7 |
+
+  Around naive, `ewmap` vs `ewma` over all scored origins: coverage 77 / 76 / 76% vs 82 / 80 / 78%, mean width
+  0.29 / 0.49 / 0.77 vs 0.32 / 0.68 / 1.30, Winkler 0.42 / 0.83 / 1.41 vs 0.44 / 1.00 / 1.88 (3 / 6 / 9 months).
+  The 15 remaining flags are mostly just above the past maximum (copper 9 m: +54% vs +52%); the large ones are the
+  plastics PPIs (S11 +81% vs +30%: its EWMA volatility is high after the 2026 oil shock) and aluminium (k = 1.5).
+  They are left to judgement, not clipped. The stress-period misses stay mostly *above* P90: no backward-looking
+  band widens before a rally starts.
+
 ## Next steps
 
 1. Forecast CSV `<team>_forecast_202609.csv` from `submission_models.csv` (point model and band per target × h,
-   chosen by the rules of `selection_config.py`; see "Model selection" above). Open question: at 6–9 months the
-   band rule falls back to the `_up` bands at the k ceiling (3.0), which cover 98–100% after 2023-07.
+   chosen by the rules of `selection_config.py`; see "Model selection" above). Check `band_plausibility.csv`
+   before sending: 15 of 66 P90s are above the largest past rise of the same length (see "Pooled bands" above).
 2. Market prices: LME 3-month forward and the Oct-2026 analyst view as P50 adjustments.
 3. ~~Indices: upstream drivers~~ done (family models): none significantly beats the best univariate model; VECM / ECM (steel PPI) and epoxy_struct as optional ensemble members.
 4. ~~Pretrained model as a benchmark~~ done (Chronos-2, zero-shot): see the findings above.
@@ -372,8 +395,10 @@ derive, fx, ragged_edge, provisional).
 | A33 | evaluation | Every score is reported for two periods by origin, 2020-01..2023-06 (stress: Covid, the 2021-22 rally, the energy crisis) and 2023-07..last origin with a known outcome, plus 2022 alone and all. | `scoring.PERIODS` |
 | A34 | selection | Candidate point models fixed in advance with a reason each: naive, lme_fwd (copper and aluminium only), combo_median, ets_local (S07-S13 and the PPI-proxy BOM indices only), chronos2. All other models stay in the backtest report only. | `selection_config.CANDIDATES` |
 | A35 | selection | Rolling selection 'selected': at origin t, errors published at or before t in the last 24 months (at least 12 per target); per family the geometric mean over its targets of MAE / naive's MAE; each target takes the best candidate that applies to it, naive if the gain is below 3%. Its band is the band of the model it selected. | `selection.rolling_selection` |
-| A36 | interval | Asymmetric band '<method>_up': P90 - P50 (log) times k >= 1 (grid 1.00-3.00, step 0.05), one k per point model, method, family and h: the smallest k with at most 10% of outcomes above P90 on the 2020-01..2023-06 origins whose outcome is published by 2023-07. The second period tests k out of sample. | `selection.tune_asym` |
+| A36 | interval | Asymmetric band '<method>_up': P90 - P50 (log) times k >= 1 (grid 1.00-1.50, step 0.05; capped at 1.5 by A39), one k per point model, method, family and h: the smallest k with at most 10% of outcomes above P90 on the 2020-01..2023-06 origins whose outcome is published by 2023-07. The second period tests k out of sample. | `selection.tune_asym` |
 | A37 | selection | Submission map, per family x h: the point strategy (selected or combo_median) replaces naive only if its geometric-mean MAE / naive is below 1 in both periods (lower worse-period ratio if both are); 'selected' = the rolling rule's choice at Sep-2026. Band: 80% coverage within [0.70, 0.90] in both periods, then the lowest Winkler; if no band qualifies, the highest stress-period coverage (capped at 0.90), then Winkler. No manual choice. | `selection.point_strategy, selection.interval_choice` |
+| A38 | interval | ewmap: residuals standardised by an EWMA volatility with lambda = 0.8 (half-life about 3 months, faster than ewma's 0.9) and pooled over every target of the point model at the same horizon; at origin t only residuals published by t; conformal bounds of the pool x the target's own volatility today. Pooling assumes the standardised residuals of different targets share one distribution: the pool's tails then include every target's stress months, not only the few dozen of one target. Fewer than 8 pooled residuals -> emp. | `models/intervals._pooled` |
+| A39 | interval | Cap of the asymmetric factor: k <= 1.5. k multiplies a log distance, so with k = 3 the 6-9 month P90s at Sep-2026 reached +120% (copper) to +475% (plastics PPI), beyond any move of that length in the data. band_plausibility.csv compares every submitted P90 with the largest past rise of the same length. | `selection_config.ASYM_K_MAX, selection.plausibility` |
 
 Limits:
 - BOM from the standalone `RM_Prices_XHEC_Challenge.xlsx`; the older BOM in `data.zip` (`bom_materials.csv`) is not used.

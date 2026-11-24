@@ -20,6 +20,8 @@ Reads outputs/backtest/backtest_predictions.csv and backtest_warmup.csv (run bac
      selection_summary.csv: naive, combo_median and selected, all 22 targets, point scores by period.
   4. Interval choice per family x h (interval_choice.csv) and point strategy per family x h -> submission_models.csv:
      point model, interval method and the reason, per submitted target x h.
+  5. band_plausibility.csv: the submitted P10 / P50 / P90 at the last origin against the target's largest and
+     95th-percentile past rise of the same length (sanity check only).
 """
 from __future__ import annotations
 
@@ -292,6 +294,28 @@ def submission_map(strat, itv, choice, k, last):
     return pd.DataFrame(rows).sort_values(["series", "h"], key=lambda c: c.map(order) if c.name == "series" else c)
 
 
+def plausibility(rows, sub, last):
+    """Submitted bands at the last origin against the target's own history known at that origin (data.panel, no
+    fill): largest, 95th-percentile h_eff-month rise and largest fall. p90_above_max_rise flags a P90 beyond every
+    rise of that length in the data (a sanity check, it changes no choice)."""
+    pan = D.panel()
+    at = rows[rows["origin"] == last].drop_duplicates(["model", "series", "h"]).set_index(["model", "series", "h"])
+    out = []
+    for r in sub.itertuples(index=False):
+        if (r.label, r.series, r.h) not in at.index:
+            continue
+        x = at.loc[(r.label, r.series, r.h)]
+        he = int(x["h_eff"])
+        lg = np.log(pan[r.series].loc[:last].dropna())
+        ch = np.exp((lg.shift(-he) - lg).dropna()) - 1
+        p90 = x["p90"] / x["y_t"] - 1
+        out.append({"series": r.series, "h": r.h, "label": r.label, "p10_pct": x["p10"] / x["y_t"] - 1,
+                    "p50_pct": x["p50"] / x["y_t"] - 1, "p90_pct": p90, "hist_p95_rise": ch.quantile(0.95),
+                    "hist_max_rise": ch.max(), "hist_max_fall": ch.min(), "n_windows": len(ch),
+                    "p90_above_max_rise": bool(p90 > ch.max())})
+    return pd.DataFrame(out)
+
+
 # ---------------------------------------------------------------------------------------------------------------------
 
 
@@ -314,6 +338,7 @@ def main():
     strat = point_strategy(rep)
     itv = interval_choice(rep, strat)
     sub = submission_map(strat, itv, choice, k, last)
+    plaus = plausibility(rows, sub, last)
 
     pd.DataFrame([{"point": p, "targets": "all submitted" if a is None else " ".join(a), "reason": why}
                   for p, (a, why) in C.CANDIDATES.items()]).to_csv(OUT / "candidates.csv", index=False)
@@ -327,7 +352,10 @@ def main():
     summ.to_csv(OUT / "selection_summary.csv", index=False, float_format="%.4f")
     itv.to_csv(OUT / "interval_choice.csv", index=False, float_format="%.4f")
     sub.to_csv(OUT / "submission_models.csv", index=False, float_format="%.4f")
+    plaus.to_csv(OUT / "band_plausibility.csv", index=False, float_format="%.4f")
     print_summary(rep, choice, k, strat, itv, sub)
+    print(f"\nBand plausibility at {last:%Y-%m}: {int(plaus['p90_above_max_rise'].sum())} of {len(plaus)} submitted "
+          f"P90s above the largest past rise of the same length (band_plausibility.csv)")
     return rep, choice, sub
 
 

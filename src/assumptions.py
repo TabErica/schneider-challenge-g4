@@ -134,7 +134,8 @@ ASSUMPTIONS = [
      "months (at least 12 per target); per family the geometric mean over its targets of MAE / naive's MAE; each "
      "target takes the best candidate that applies to it, naive if the gain is below 3%. Its band is the band of the "
      "model it selected.", "selection.rolling_selection"),
-    ("A36", "interval", "Asymmetric band '<method>_up': P90 - P50 (log) times k >= 1 (grid 1.00-3.00, step 0.05), "
+    ("A36", "interval", "Asymmetric band '<method>_up': P90 - P50 (log) times k >= 1 (grid 1.00-1.50, step 0.05; "
+     "capped at 1.5 by A39), "
      "one k per point model, method, family and h: the smallest k with at most 10% of outcomes above P90 on the "
      "2020-01..2023-06 origins whose outcome is published by 2023-07. The second period tests k out of sample.",
      "selection.tune_asym"),
@@ -143,6 +144,16 @@ ASSUMPTIONS = [
      "are); 'selected' = the rolling rule's choice at Sep-2026. Band: 80% coverage within [0.70, 0.90] in both "
      "periods, then the lowest Winkler; if no band qualifies, the highest stress-period coverage (capped at 0.90), "
      "then Winkler. No manual choice.", "selection.point_strategy, selection.interval_choice"),
+    ("A38", "interval", "ewmap: residuals standardised by an EWMA volatility with lambda = 0.8 (half-life about 3 "
+     "months, faster than ewma's 0.9) and pooled over every target of the point model at the same horizon; at origin "
+     "t only residuals published by t; conformal bounds of the pool x the target's own volatility today. Pooling "
+     "assumes the standardised residuals of different targets share one distribution: the pool's tails then include "
+     "every target's stress months, not only the few dozen of one target. Fewer than 8 pooled residuals -> emp.",
+     "models/intervals._pooled"),
+    ("A39", "interval", "Cap of the asymmetric factor: k <= 1.5. k multiplies a log distance, so with k = 3 the 6-9 "
+     "month P90s at Sep-2026 reached +120% (copper) to +475% (plastics PPI), beyond any move of that length in the "
+     "data. band_plausibility.csv compares every submitted P90 with the largest past rise of the same length.",
+     "selection_config.ASYM_K_MAX, selection.plausibility"),
 ]
 
 
