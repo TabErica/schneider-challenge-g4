@@ -120,6 +120,29 @@ ASSUMPTIONS = [
     ("A31", "pipeline", "Chronos forecasts are cached (outputs/backtest/fm_cache/) per origin, target and sha256 of "
      "the exact input: a cached forecast is reused only for an identical input. Without the optional fm dependencies "
      "the backtest reads the cache and skips what is missing.", "models/fm.Cache"),
+    ("A32", "evaluation", "Multiple testing: every Diebold-Mariano conclusion (vs naive, vs the best univariate model) "
+     "uses the Benjamini-Hochberg q value, q < 0.05. One family = all point models x submitted targets x horizons of "
+     "one table and period; tests without a p value (P50 = naive) are left out of the family. The raw p < 0.05 "
+     "counts are kept for comparison only.", "scoring.bh_qvalues, scoring.per_series"),
+    ("A33", "evaluation", "Every score is reported for two periods by origin, 2020-01..2023-06 (stress: Covid, the "
+     "2021-22 rally, the energy crisis) and 2023-07..last origin with a known outcome, plus 2022 alone and all.",
+     "scoring.PERIODS"),
+    ("A34", "selection", "Candidate point models fixed in advance with a reason each: naive, lme_fwd (copper and "
+     "aluminium only), combo_median, ets_local (S07-S13 and the PPI-proxy BOM indices only), chronos2. All other "
+     "models stay in the backtest report only.", "selection_config.CANDIDATES"),
+    ("A35", "selection", "Rolling selection 'selected': at origin t, errors published at or before t in the last 24 "
+     "months (at least 12 per target); per family the geometric mean over its targets of MAE / naive's MAE; each "
+     "target takes the best candidate that applies to it, naive if the gain is below 3%. Its band is the band of the "
+     "model it selected.", "selection.rolling_selection"),
+    ("A36", "interval", "Asymmetric band '<method>_up': P90 - P50 (log) times k >= 1 (grid 1.00-3.00, step 0.05), "
+     "one k per point model, method, family and h: the smallest k with at most 10% of outcomes above P90 on the "
+     "2020-01..2023-06 origins whose outcome is published by 2023-07. The second period tests k out of sample.",
+     "selection.tune_asym"),
+    ("A37", "selection", "Submission map, per family x h: the point strategy (selected or combo_median) replaces "
+     "naive only if its geometric-mean MAE / naive is below 1 in both periods (lower worse-period ratio if both "
+     "are); 'selected' = the rolling rule's choice at Sep-2026. Band: 80% coverage within [0.70, 0.90] in both "
+     "periods, then the lowest Winkler; if no band qualifies, the highest stress-period coverage (capped at 0.90), "
+     "then Winkler. No manual choice.", "selection.point_strategy, selection.interval_choice"),
 ]
 
 

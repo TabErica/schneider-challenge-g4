@@ -16,6 +16,9 @@ Two passes:
   2. interval layer (models/intervals.py): emp / conf / aci / ewma bands around every point model, from the
      residuals already published at each origin. The warm-up origins (2018-19) only build that residual history:
      scores (scoring.py) use origins >= SCORE_START (2020-01).
+The point forecasts of the warm-up origins are written to backtest_warmup.csv (one row per point model, target, h,
+origin): selection.py needs the errors known before 2020-01 for its rolling window. Every row carries `reveal`, the
+month its outcome is published.
 No forward fill anywhere.
 
     python backtest.py [--origin 2026-09] [--no-nowcast] [--drop-provisional] [--bom-weights base|origin]
@@ -102,8 +105,8 @@ def check_history(full):
 def run(origin=P.CUTOFF, nowcast=True, drop_provisional=False, bom_weights="base", model_names=None):
     """Point pass over origins WARMUP_START..origin, then the interval layer. Rows are kept when the outcome is known
     as of `origin`, and always at `origin` itself (the forecast). Returns (predictions of the scored origins, nowcast
-    log, BOM rebase factors, ACI gamma table, runtime table). model_names: run only these point models (naive is
-    always kept as the reference)."""
+    log, BOM rebase factors, ACI gamma table, runtime table, point forecasts of the warm-up origins). model_names: run
+    only these point models (naive is always kept as the reference)."""
     t0, origin = time.time(), pd.Timestamp(origin)
     if origin < SCORE_START:
         raise ValueError(f"origin must be >= {SCORE_START:%Y-%m}")
@@ -183,9 +186,12 @@ def run(origin=P.CUTOFF, nowcast=True, drop_provisional=False, bom_weights="base
     native = pts[pts["q10n"].notna()].assign(interval="native", q10=lambda d: d["q10n"], q90=lambda d: d["q90n"],
                                              fallback=False)
     meta_cols = ["point", "series", "h", "origin", "h_eff", "anchor", "y_t", "actual", "n_train",
-                 "anchor_provisional", "mase_scale"]
+                 "anchor_provisional", "mase_scale", "reveal"]
     res = pd.concat([bands.merge(pts[meta_cols], on=["point", "series", "h", "origin"]),
                      native[meta_cols + ["interval", "q10", "q50", "q90", "fallback"]]], ignore_index=True)
+    warm = pts.loc[pts["origin"] < SCORE_START, ["point", "series", "h", "origin", "h_eff", "y_t", "actual", "q50",
+                                                  "reveal"]].reset_index(drop=True)
+    warm["p50"] = warm["y_t"] * np.exp(warm["q50"])
     res = res[res["origin"] >= SCORE_START]
     for q in ("10", "50", "90"):
         res[f"p{q}"] = res["y_t"] * np.exp(res[f"q{q}"])
@@ -195,7 +201,7 @@ def run(origin=P.CUTOFF, nowcast=True, drop_provisional=False, bom_weights="base
                            + [{"kind": "interval method", "name": k, "seconds": v} for k, v in iclock.items()])
     runtime["origins"] = len(pd.date_range(WARMUP_START, origin, freq="MS"))
     print(f"  done ({time.time() - t0:.0f}s)", flush=True)
-    return res, pd.DataFrame(nowlog), rebase, gamma, runtime
+    return res, pd.DataFrame(nowlog), rebase, gamma, runtime, warm
 
 
 def score(res, save_dir=None):
@@ -260,8 +266,9 @@ def main(argv=None):
     nowcast = not a.no_nowcast
     d = out_dir(origin, nowcast, a.drop_provisional, a.bom_weights)
     print(f"backtest -> {d.relative_to(D.ROOT)}")
-    res, nowlog, rebase, gamma, runtime = run(origin, nowcast, a.drop_provisional, a.bom_weights,
-                                              [m for m in a.models.split(",") if m])
+    res, nowlog, rebase, gamma, runtime, warm = run(origin, nowcast, a.drop_provisional, a.bom_weights,
+                                                    [m for m in a.models.split(",") if m])
+    warm.to_csv(d / "backtest_warmup.csv", index=False)
     rebase.to_csv(d / "bom_rebase.csv", float_format="%.6f")
     gamma.to_csv(d / "aci_gamma.csv", index=False, float_format="%.4f")
     runtime.to_csv(d / "runtime.csv", index=False, float_format="%.2f")
@@ -298,7 +305,7 @@ def print_lme(per, qb):
     p = per[per["model"].isin(["lme_fwd+emp", "naive+emp"])]
     print("\nlme_fwd vs naive (rel. MAE, DM stat / p), origins 2020-01+:")
     print(p[p.model == "lme_fwd+emp"].pivot_table(index="series", columns="h",
-                                                   values=["rel_mae", "dm_stat", "dm_p"]).round(3).to_string())
+                                                   values=["rel_mae", "dm_stat", "dm_p", "dm_q"]).round(3).to_string())
     q = qb[qb["period"] == "2020-"].pivot_table(index=["metal", "currency", "h"], columns="basis",
                                                  values=["bias", "mae"])
     print("\nQuote basis: cash vs 3-month LME price at the origin as forecast of the cash average h months later "

@@ -380,15 +380,18 @@ def compare(res):
             stat, p = scoring.dm_test(d.values, int(gm["h_eff"].max()) - 1)
             row = {"series": s, "h": h, "model": m, "n": len(common), "best_univariate": best,
                    "rel_mae_vs_best_uni": gm.loc[common, "ae"].mean() / b.loc[common, "ae"].mean(),
-                   "dm_stat": stat, "dm_p": p, "significantly_better": bool(p < 0.05 and stat < 0),
-                   "significantly_worse": bool(p < 0.05 and stat > 0),
-                   "rel_mae_vs_naive": gm["ae"].mean() / gm["naive_ae"].mean()}
+                   "dm_stat": stat, "dm_p": p, "rel_mae_vs_naive": gm["ae"].mean() / gm["naive_ae"].mean()}
             for band in BANDS + (["native"] if m == "gbm_family" else []):
                 gb = r[(r["model"] == f"{m}+{band}") & (r["series"] == s) & (r["h"] == h)]
                 row[f"coverage80_{band}"] = gb["covered"].mean()
                 row[f"winkler_{band}"] = gb["winkler"].mean()
             rows.append(row)
-    return pd.DataFrame(rows)
+    out = pd.DataFrame(rows)
+    # Benjamini-Hochberg over every test of the table (family models x targets x horizons), significance = q < 0.05
+    out.insert(out.columns.get_loc("dm_p") + 1, "dm_q", scoring.bh_qvalues(out["dm_p"]))
+    out["significantly_better"] = (out["dm_q"] < scoring.Q_LEVEL) & (out["dm_stat"] < 0)
+    out["significantly_worse"] = (out["dm_q"] < scoring.Q_LEVEL) & (out["dm_stat"] > 0)
+    return out
 
 
 def write_reports(res, d):
@@ -401,7 +404,7 @@ def write_reports(res, d):
                                         "epoxy_beta": "epoxy_beta.csv", "ridge_alpha": "ridge_alpha.csv"}[k],
                                    index=False, float_format="%.4f")
     pd.set_option("display.width", 220)
-    print("\nFamily models vs the best univariate model per target (rel. MAE < 1 = better; * = DM p < 0.05 better, "
+    print("\nFamily models vs the best univariate model per target (rel. MAE < 1 = better; * = DM BH q < 0.05 better, "
           "! = significantly worse), origins 2020-01+:")
     t = cmp.assign(cell=cmp["rel_mae_vs_best_uni"].map("{:.2f}".format)
                    + np.where(cmp["significantly_better"], "*", np.where(cmp["significantly_worse"], "!", "")))
@@ -409,5 +412,5 @@ def write_reports(res, d):
     sig = cmp[cmp["significantly_better"]]
     print("\nSignificantly better than the best univariate model:",
           "none" if sig.empty else "; ".join(f"{r.series} h={r.h} {r.model} ({r.rel_mae_vs_best_uni:.2f}, "
-                                             f"p={r.dm_p:.3f})" for r in sig.itertuples()))
+                                             f"q={r.dm_q:.3f})" for r in sig.itertuples()))
     return cmp

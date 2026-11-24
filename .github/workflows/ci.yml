@@ -28,4 +28,4 @@ jobs:
         run: uv run pre-commit run --all-files --show-diff-on-failure
 
       - name: Code imports
-        run: uv run python -c "import sys; sys.path.insert(0, 'src'); import targets, assumptions, data, preprocess, eda, features, models, scoring, backtest, sensitivity, diagrams"
+        run: uv run python -c "import sys; sys.path.insert(0, 'src'); import targets, assumptions, data, preprocess, eda, features, models, scoring, backtest, sensitivity, selection, diagrams"

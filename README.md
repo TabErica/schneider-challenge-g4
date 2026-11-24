@@ -90,7 +90,10 @@ series catalog with relative lags and provisional months, transformation log), `
 summary / family × period, `best_by_family.csv`, `quote_basis.csv`, `aci_gamma.csv`, `runtime.csv`, training sizes,
 `sensitivity.csv`; one sub-folder per sensitivity variant or held-back origin). Chronos-2: `fm_vs_benchmarks.csv`,
 `fm_by_family.csv`, `fm_intervals.csv`, `fm_runtime.csv`, and the forecast cache `fm_cache/` (one row per origin,
-target, input hash and step; reused only for an identical input).
+target, input hash and step; reused only for an identical input). `backtest_warmup.csv`: point forecasts of the
+2018-19 warm-up origins (input of the rolling selection).
+`outputs/selection/` (`selection.py`): `candidates.csv`, `selected_choices.csv` (the rolling rule's choice at every
+origin), `asym_k.csv`, `selection_report.csv`, `selection_summary.csv`, `interval_choice.csv`, `submission_models.csv`.
 `DECK=1` renders charts in slide style to `outputs/slides/`. Colours: **RM6 green `#16884A`, RM AirSeT blue `#3478B8`**.
 
 | File | Role |
@@ -107,7 +110,9 @@ target, input hash and step; reused only for an identical input).
 | `src/models/` | One interface (`base.py`: origin context in, log-return quantiles out). `classic.py` naive / drift / damped ETS / Ridge / global GBM (the first backtest, unchanged); `sf.py` AutoETS, AutoARIMA, Theta, OptimizedTheta (statsforecast); `combo.py` mean(naive, AutoETS), median(naive, AutoETS, Theta, AutoARIMA); `lme.py` LME 3-month price as P50 + quote-basis table; `intervals.py` emp / split conformal / ACI / EWMA-scaled bands around any point model; `multi.py` family models with leading indicators: ARDL, Ridge (time-series CV alpha), ECM (steel PPI ← CRU), VECM chain (iron ore → CRU CR → S09, Johansen), slim global quantile GBM shrunk to naive, epoxy structural model, and the comparison with the best univariate model |
 | `src/models/fm.py` | Chronos-2 (pretrained foundation model, zero-shot, CPU): univariate and with past covariates (sources of the step-3 leading indicators), forecast cache keyed by input hash, input leakage check, comparison with naive / best univariate / best multivariate by family, raw vs calibrated bands, runtime |
 | `src/features.py` | Leading indicators of the family models (1-4 per target, each with an economic reason) → `outputs/features/feature_availability.csv` (source, transformation, lag vs the origin, first month, meaning); **leakage test** (every design row at every origin rebuilt from the panel as seen at the origin = full-panel row); epoxy identity check (`epoxy_identity.csv`) |
-| `src/scoring.py` | Scores: rel. MAE, MASE, pinball, coverage (above / below), width, Winkler, Diebold-Mariano vs naive; by family × period (2020-21, 2022, 2023-26); best point model and band per family × horizon |
+| `src/scoring.py` | Scores: rel. MAE, MASE, pinball, coverage (above / below), width, Winkler, Diebold-Mariano vs naive with Benjamini-Hochberg q values (significance = q < 0.05); by family × period (2020-01..2023-06, 2023-07..end, 2022 alone, all); best point model and band per family × horizon |
+| `src/selection_config.py` | Rules of the model selection, fixed before it was run: the 5 candidates and why, the rolling window (24 months, 3% minimum gain), the asymmetric band grid, the coverage constraint [0.70, 0.90] and the submission rules |
+| `src/selection.py` | Rolling selection meta-model `selected`, asymmetric bands `<method>_up`, scores of the candidates by family × h × period (`selection_report.csv`), interval choice, submission model map (`submission_models.csv`) |
 | `src/sensitivity.py` | Backtest variants against the baseline (no nowcast, provisional dropped, origin BOM weights) → `sensitivity.csv`; a variant is re-run only when its inputs change (cache key) |
 | `src/plot_backtest.py` | Error relative to naive per series / model / horizon |
 | `src/diagrams.py` | Production chain (predictive links, `link_table`) and methodology diagrams |
@@ -157,16 +162,18 @@ target, input hash and step; reused only for an identical input).
 
 - **Refactor checked**: the five first-backtest models, moved to `src/models/`, give exactly the same P10 / P50 / P90
   on every row (`naive` = `naive+emp`, ..., `gbm_global` = `gbm_global+native`).
-- **P50: nothing significantly beats naive.** Diebold-Mariano (absolute errors, Newey-West lag h - 1): at most one
-  target per model and horizon is significantly better than naive; Theta / OptimizedTheta are significantly *worse*
-  on 7–9 targets, the global GBM on 15 at 9 months.
+- **P50: nothing significantly beats naive.** Diebold-Mariano (absolute errors, Newey-West lag h - 1) with the
+  Benjamini-Hochberg correction (A32): of 885 point model × target × horizon cells (852 with a p value; gbm_family's
+  P50 is naive), **none is significantly better or worse than naive** (smallest q 0.054). Without the correction
+  (p < 0.05) 7 would count as better and 137 as worse (Theta / OptimizedTheta on 7–9 targets, the global GBM on 15
+  at 9 months): the "worse" signal is real in the raw p values, but no single cell survives the correction.
   - Best mean MASE per family × horizon (`best_by_family.csv`): damped ETS at 3 months, mean(naive, AutoETS) at
     6 months, naive at 9 months in most families. Gains over naive are 0–11% in MASE.
   - AutoETS picks a random walk on most exchange-traded prices (rel. MAE exactly 1.00). The mean(naive, AutoETS)
     combination is the steadiest: rel. MAE 0.88–0.98 on the EU steel / aluminium / plastics PPIs and the PPI-proxy
     BOM (aluminium PPI 1.02 at 9 months).
-  - **LME 3-month price as P50** (D01, D02, S01, S02): rel. MAE 0.97–1.01, only S02 at 6 months significant
-    (p = 0.03). **Quote basis**: the 3-month price beats cash as the forecast of future cash by 0–0.4 MAE points
+  - **LME 3-month price as P50** (D01, D02, S01, S02): rel. MAE 0.97–1.01; S02 at 6 months has p = 0.03 but q = 0.25:
+    not significant after the correction. **Quote basis**: the 3-month price beats cash as the forecast of future cash by 0–0.4 MAE points
     (copper in EUR at 6 months is the one case where cash is slightly better) and has less bias (e.g. aluminium,
     3 months: −0.9% vs −1.7%). Both under-forecast in 2020-26 (copper −2.6% to −8.5%), because prices rose.
 - **Bands: conformal fixes the average, not the regimes.** Mean 80% coverage over all point models
@@ -175,8 +182,8 @@ target, input hash and step; reused only for an identical input).
   - Misses stay lopsided (above P90 12–17%, below P10 8–12% with ACI).
   - The Winkler score still prefers the narrow emp band at 6–9 months, because the wider conformal bands pay for
     their width.
-  - By period: on steel, ACI around damped ETS covers 50–61% in 2020-21 and 96–100% in 2023-26. The 80% average
-    hides a band that is too narrow in the rally and too wide afterwards.
+  - By period: on steel, ACI around damped ETS covers 66–72% in 2020-01..2023-06 and 95–100% from 2023-07. The 80%
+    average hides a band that is too narrow in the rally and too wide afterwards.
 - ACI gamma per point model from the 2018-19 warm-up only (`aci_gamma.csv`). Ridge, GBM and lme_fwd have too few
   warm-up bands and use the default 0.005.
 - **Held-back Jun-2026** (3 months, 22 targets): every point model is within 1 point of naive's 6.3% error
@@ -193,10 +200,11 @@ target, input hash and step; reused only for an identical input).
   R² 0.98, max residual about 290 EUR/t. Estimated elasticities at Sep-2026 (9 months): other costs 0.58, ECH 0.24,
   acetone 0.10, benzene 0.09.
 - **No family model is significantly better than the best univariate model, on any target or horizon** (Diebold-Mariano,
-  `multivariate_vs_univariate.csv`), and none is significantly better than naive. Closest: VECM on S09 at 3 months
+  BH q, `multivariate_vs_univariate.csv`), and none is significantly better than naive. Closest: VECM on S09 at 3 months
   (0.97 × the best univariate MAE), the epoxy structural model at 6 months (0.96), ARDL / Ridge on S09 at 3 months (0.98).
-  - ARDL is significantly *worse* than the best univariate model on 2 / 4 / 7 targets at 3 / 6 / 9 months, Ridge on
-    1 / 1 / 7 (mostly LME metals and CRU coil at 9 months). Ridge picks the largest penalty (alpha = 1000) in 38% of
+  - Uncorrected, ARDL is *worse* than the best univariate model (p < 0.05) on 2 / 4 / 7 targets at 3 / 6 / 9 months,
+    Ridge on 1 / 1 / 7 (mostly LME metals and CRU coil at 9 months); after the BH correction none of the 23 is
+    significant (smallest q 0.10). Ridge picks the largest penalty (alpha = 1000) in 38% of
     its fits: the indicators carry little signal once the target's own changes are in.
   - On the steel PPI at 3 months ECM (S09 0.84, S10 0.86 × naive's MAE) and VECM (S09 0.77) beat naive, but not
     damped ETS (0.97-1.05 × its MAE, DM p > 0.7), which already captures the PPI's momentum. ECM loses to naive at
@@ -243,14 +251,15 @@ with hindsight on MAE, so the benchmarks are favoured), `fm_by_family.csv`, `fm_
 - **Point forecasts: Chronos-2 is a naive-like forecaster, no better than the univariate models.** Median rel. MAE
   vs naive by family (3 / 6 / 9 months): BOM 1.01 / 1.04 / 1.02, base metals 1.02 / 1.04 / 1.09, epoxy 0.95 / 1.02 /
   1.07, plastics 0.93 / 0.98 / 1.02, steel 0.99 / 1.01 / 1.02; vs the best univariate model of each target 0.96–1.10.
-  Diebold-Mariano vs the best univariate model: significantly better on 1 of 66 target × horizon cells (zinc 9 m,
-  0.91), significantly worse on 6 (copper S01 3 / 6 / 9 m, D01 9 m, BOM RM6 PPI-proxy 6 / 9 m). Against naive it is
-  significantly better on aluminium PPI S08 at 3 months (0.70) and zinc 9 m only.
+  Diebold-Mariano with BH q: vs the best univariate model no cell is significant (uncorrected p < 0.05: 1 better,
+  zinc 9 m, 6 worse). Against naive none is significantly better (uncorrected: S08 at 3 months, 0.70, and zinc 9 m);
+  copper D01 and S01 at 9 months are significantly *worse* (1.13 / 1.12 × naive, q = 0.03).
 - **With covariates**: better on the PPIs (median rel. MAE vs naive: steel 0.93 / 0.94 / 0.94, plastics 0.85 /
-  0.87 / 0.94; S08 at 3 months 0.63, significantly better than the best univariate model, ETS: 0.85 × its MAE,
-  p = 0.03), worse on LME copper (1.10–1.18 × naive, significantly worse than the best univariate at 3 and 9 months).
-  Against the best multivariate model of each target (hindsight) it is 0.81–0.97 by family; significantly better on
-  S10 / S11 / stainless at 9 months and HDG coil (DM p < 0.05), mostly where ARDL / Ridge are poor at 9 months.
+  0.87 / 0.94; S08 at 3 months 0.63, 0.85 × the best univariate model's MAE,
+  p = 0.03 but not significant after BH), worse on LME copper (1.10–1.18 × naive; uncorrected p < 0.05 vs the best
+  univariate at 3 and 9 months, not significant after BH). Against the best multivariate model of each target
+  (hindsight) it is 0.81–0.97 by family; uncorrected p < 0.05 on S10 / S11 / stainless at 9 months and HDG coil,
+  none significant after BH.
 - **Raw Chronos bands are too narrow and lopsided**: coverage of `+native` 72 / 70 / 69% (3 / 6 / 9 months), misses
   above P90 20 / 24 / 27% vs below P10 8 / 6 / 4%; after 2025-11 only 70 / 50 / 29%. Calibrated: conf = aci (gamma 0
   chosen on the warm-up for chronos2) 74 / 72 / 69%, ewma 81 / 79 / 76% at 1.4–1.9 × the native Winkler at 6–9 months
@@ -264,10 +273,56 @@ with hindsight on MAE, so the benchmarks are favoured), `fm_by_family.csv`, `fm_
   keep it as a documented benchmark. `chronos2_cov` on the EU PPIs (S08 / S09 / S10 / S11) is the only candidate for
   an ensemble slot, and its post-release deterioration argues against relying on it.
 
+### Model selection and submission map (22 submitted targets, origins Jan-2020 → Sep-2026)
+
+Rules fixed before the run in `src/selection_config.py` (A34–A37); `src/selection.py` applies them, no manual
+choice. Periods by origin: **2020-01..2023-06** (stress: Covid, the 2021-22 rally, the energy crisis) and
+**2023-07..end**, plus 2022 alone (`selection_report.csv`: every candidate and `selected`, every band, family × h ×
+period: geometric-mean MAE / naive, BH q, coverage with the shares above / below, Winkler).
+
+- **Point forecasts as a whole do not significantly beat naive.** After the Benjamini-Hochberg correction no point
+  model is significantly better than naive on any target and horizon (885 cells, 852 tests, smallest q 0.054). In
+  `selection_report.csv` no candidate and not `selected` is significantly better than naive at the family level
+  (pooled DM) in any family, horizon or period; the significant family-level results are all *worse* (chronos2 and
+  ets_local at 9 months after 2023-07, combo_median on plastics at 9 months). Per target, 2 sub-period cells pass
+  q < 0.05 as better (combo_median on aluminium S02 at 9 months after 2023-07, 0.98 × naive; lme_fwd on copper D01
+  at 9 months in 2022, 0.95, 12 origins), against 26 as worse.
+- **Candidates** (A34, reasons in `candidates.csv`): naive, lme_fwd (copper and aluminium only), combo_median,
+  ets_local (S07–S13 and the PPI-proxy BOM indices only), chronos2. The other models stay in the backtest report.
+- **Choosing by past performance does not carry over.** Picking the best model per target on 2020-01..2023-06 (all
+  models, hindsight) gives 1.027 / 1.047 / 1.062 × naive's MAE after 2023-07 (3 / 6 / 9 months, geometric mean over
+  the 22 targets). The rolling meta-model `selected` (A35: family ranking on the last 24 months of published errors,
+  naive unless the gain is ≥ 3%) is out of sample in both periods:
+
+  | MAE / naive (3 / 6 / 9 m) | 2020-01..2023-06 | 2022 | 2023-07..end |
+  |---|---|---|---|
+  | `selected` | 0.948 / 1.008 / 1.035 | 1.072 / 1.167 / 1.246 | 1.016 / 1.056 / 1.036 |
+  | `combo_median` | 0.977 / 1.020 / 1.047 | 1.042 / 1.150 / 1.243 | 0.967 / 0.982 / 1.000 |
+
+  `selected` lags the regime: ets_local wins in the stress period (PPI families 0.79–0.89 × naive at 3 months), the
+  window keeps choosing it after 2023-07, when it loses (plastics 1.42 at 3 months). Only combo_median stays at or
+  below naive after 2023-07; neither is significant.
+- **Bands depend on the regime, not only on the method.** Around naive, 80% coverage is 45–57% (emp / conf / aci)
+  and 64–75% (ewma) in 2020-01..2023-06, with misses mostly *above* P90 (18–33% above vs 6–23% below). From 2023-07
+  the same bands cover 88–98%. In 2022 the misses are *below* P10 (prices fell in the second half): the stress is not
+  only upward.
+- **Asymmetric band `<method>_up`** (A36: P90 - P50 × k, k tuned on 2020-01..2023-06 only): at 3 months k = 1.25–3.0
+  brings the stress-period share above P90 to about 10% (in sample), and the coverage after 2023-07 rises to 95–97%
+  (out of sample: over-coverage). At 6–9 months even k = 3.0 (the grid ceiling) leaves 10–35% above P90 in the
+  stress period, and the band covers 98–100% after 2023-07.
+- **Interval choice** (A37: coverage within [0.70, 0.90] in both periods, then the lowest Winkler): only 4 of 15
+  family × horizon cells have such a band (BOM 3 m, base metals 3 m, plastics 3 / 6 m, all `ewma`). In the other 11
+  the fallback (highest stress-period coverage, capped at 0.90) picks an `_up` band, mostly at k = 3.0, with 98–100%
+  coverage after 2023-07: wide enough for a 2021-22 rally, too wide in a calm market.
+- **`submission_models.csv`** (66 target × horizon rows, with the reason of each choice): P50 = combo_median on 23
+  rows (base metals and steel at 3 months, BOM indices at 3 and 6 months), naive on 43 (plastics at 9 months chose
+  the `selected` strategy, whose rule picks naive at Sep-2026). Bands: ewma_up 39, ewma 16, emp_up 10, conf_up 1.
+
 ## Next steps
 
-1. Forecast CSV `<team>_forecast_202609.csv`: per-series model choice by backtest, calibrated intervals (wider,
-   asymmetric, from a window that includes 2020-22).
+1. Forecast CSV `<team>_forecast_202609.csv` from `submission_models.csv` (point model and band per target × h,
+   chosen by the rules of `selection_config.py`; see "Model selection" above). Open question: at 6–9 months the
+   band rule falls back to the `_up` bands at the k ceiling (3.0), which cover 98–100% after 2023-07.
 2. Market prices: LME 3-month forward and the Oct-2026 analyst view as P50 adjustments.
 3. ~~Indices: upstream drivers~~ done (family models): none significantly beats the best univariate model; VECM / ECM (steel PPI) and epoxy_struct as optional ensemble members.
 4. ~~Pretrained model as a benchmark~~ done (Chronos-2, zero-shot): see the findings above.
@@ -313,6 +368,12 @@ derive, fx, ragged_edge, provisional).
 | A29 | model | chronos2_cov: as chronos2 + past covariates only (never known-future values): 1-3 source series of the target's step-3 leading indicators, as published, aligned on the target's context months (values up to the anchor). TTF dropped for HDG coil and LME aluminium to keep 3. Only the 11 family targets. | `models/fm.COVARIATES` |
 | A30 | evaluation | Pretraining leakage: Chronos-2's training corpus (parts of the Chronos and GIFT-Eval pretraining data, incl. M4 monthly, plus synthetic series) has no published cutoff and may contain some public series of this panel. Weights published on the Hugging Face hub on 2025-10-30 (paper 2025-10-17): origins from 2025-11 are reported separately (post_release); their outcomes cannot be in the training data. | `models/fm.POST_RELEASE` |
 | A31 | pipeline | Chronos forecasts are cached (outputs/backtest/fm_cache/) per origin, target and sha256 of the exact input: a cached forecast is reused only for an identical input. Without the optional fm dependencies the backtest reads the cache and skips what is missing. | `models/fm.Cache` |
+| A32 | evaluation | Multiple testing: every Diebold-Mariano conclusion (vs naive, vs the best univariate model) uses the Benjamini-Hochberg q value, q < 0.05. One family = all point models x submitted targets x horizons of one table and period; tests without a p value (P50 = naive) are left out of the family. The raw p < 0.05 counts are kept for comparison only. | `scoring.bh_qvalues, scoring.per_series` |
+| A33 | evaluation | Every score is reported for two periods by origin, 2020-01..2023-06 (stress: Covid, the 2021-22 rally, the energy crisis) and 2023-07..last origin with a known outcome, plus 2022 alone and all. | `scoring.PERIODS` |
+| A34 | selection | Candidate point models fixed in advance with a reason each: naive, lme_fwd (copper and aluminium only), combo_median, ets_local (S07-S13 and the PPI-proxy BOM indices only), chronos2. All other models stay in the backtest report only. | `selection_config.CANDIDATES` |
+| A35 | selection | Rolling selection 'selected': at origin t, errors published at or before t in the last 24 months (at least 12 per target); per family the geometric mean over its targets of MAE / naive's MAE; each target takes the best candidate that applies to it, naive if the gain is below 3%. Its band is the band of the model it selected. | `selection.rolling_selection` |
+| A36 | interval | Asymmetric band '<method>_up': P90 - P50 (log) times k >= 1 (grid 1.00-3.00, step 0.05), one k per point model, method, family and h: the smallest k with at most 10% of outcomes above P90 on the 2020-01..2023-06 origins whose outcome is published by 2023-07. The second period tests k out of sample. | `selection.tune_asym` |
+| A37 | selection | Submission map, per family x h: the point strategy (selected or combo_median) replaces naive only if its geometric-mean MAE / naive is below 1 in both periods (lower worse-period ratio if both are); 'selected' = the rolling rule's choice at Sep-2026. Band: 80% coverage within [0.70, 0.90] in both periods, then the lowest Winkler; if no band qualifies, the highest stress-period coverage (capped at 0.90), then Winkler. No manual choice. | `selection.point_strategy, selection.interval_choice` |
 
 Limits:
 - BOM from the standalone `RM_Prices_XHEC_Challenge.xlsx`; the older BOM in `data.zip` (`bom_materials.csv`) is not used.

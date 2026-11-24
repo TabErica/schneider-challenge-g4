@@ -307,17 +307,22 @@ def compare(res):
         for c, v in ((b, ""), (f"rel_mae_vs_{b}", np.nan), (f"dm_stat_vs_{b}", np.nan), (f"dm_p_vs_{b}", np.nan)):
             if c not in out:
                 out[c] = v
+        # Benjamini-Hochberg q per benchmark and period: one family = Chronos models x submitted targets x horizons
+        # (the epoxy inputs form their own family)
+        out[f"dm_q_vs_{b}"] = np.nan
+        for _, g in out.groupby(["period", "in_submission"]):
+            out.loc[g.index, f"dm_q_vs_{b}"] = scoring.bh_qvalues(g[f"dm_p_vs_{b}"])
     return out
 
 
 def by_family(cmp):
-    """Family x h x model x period, submitted targets: median rel. MAE and DM counts (p < 0.05) per benchmark, mean
+    """Family x h x model x period, submitted targets: median rel. MAE and DM counts (BH q < 0.05) per benchmark, mean
     coverage / Winkler; family "all" pools them."""
     cmp = cmp[cmp["in_submission"]]
     agg = {"n_series": ("series", "nunique")}
     for b in ("naive", "best_univariate", "best_multivariate"):
-        c = cmp.assign(**{f"better_{b}": (cmp[f"dm_p_vs_{b}"] < 0.05) & (cmp[f"dm_stat_vs_{b}"] < 0),
-                          f"worse_{b}": (cmp[f"dm_p_vs_{b}"] < 0.05) & (cmp[f"dm_stat_vs_{b}"] > 0)})
+        c = cmp.assign(**{f"better_{b}": (cmp[f"dm_q_vs_{b}"] < 0.05) & (cmp[f"dm_stat_vs_{b}"] < 0),
+                          f"worse_{b}": (cmp[f"dm_q_vs_{b}"] < 0.05) & (cmp[f"dm_stat_vs_{b}"] > 0)})
         cmp = c
         agg |= {f"median_rel_mae_vs_{b}": (f"rel_mae_vs_{b}", "median"), f"dm_better_{b}": (f"better_{b}", "sum"),
                 f"dm_worse_{b}": (f"worse_{b}", "sum")}
