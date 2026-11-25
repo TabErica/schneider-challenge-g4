@@ -1,6 +1,6 @@
-"""Run Member 3 after the default preprocessing and pooling-compatible backtest.
+"""Run the BOM cost and pricing step after the default preprocessing and pooling-compatible backtest.
 
-Run `uv run python src/member3.py` for CSVs and figures in outputs/member3/.
+Run `uv run python src/cost_pricing.py` for CSVs and figures in outputs/cost_pricing/.
 Optionally pass `--commercial-inputs PATH` for a CSV keyed by product and target_month
 (YYYY-MM), with any of units, base_price_eur_ex_vat, additional_direct_cost_eur_per_unit.
 Units are the target month's volume at the base price. Additional direct cost should
@@ -15,22 +15,22 @@ import pandas as pd
 
 import data as D
 import preprocess as P
-from member3_backtest import (
+from cost_backtest import (
     COMPARISON_METHODS, EVALUATION_CUTOFF, add_product_bands, branch_material_forecasts, product_rows, release_lags,
     score_products,
 )
-from member3_bom import COST, assumption_sensitivity, bom_audit, build_costs, load_bom
-from member3_charts import save_charts
-from member3_commercial import commercial_scenarios, decision_table, elasticity_scenarios, load_commercial_inputs
-from member3_decision_analysis import material_exposure, pricing_frontier, validate_forecast_choice
-from member3_decision_brief import save_decision_brief
-from member3_eto import OfferAssumptions, basket_history, make_offers, validity_choices, waiting_risk
-from member3_eto_charts import save_eto_brief
-from member3_submission import DEFAULT_TEAM_ID, add_planning_reference, build_submission, coverage_register, material_calibration
-from member3_handoff import migration_thresholds
+from bom_cost import COST, assumption_sensitivity, bom_audit, build_costs, load_bom
+from plot_cost import save_charts
+from pricing_scenarios import commercial_scenarios, decision_table, elasticity_scenarios, load_commercial_inputs
+from pricing_decision import material_exposure, pricing_frontier, validate_forecast_choice
+from plot_decision_brief import save_decision_brief
+from quote_policy import OfferAssumptions, basket_history, make_offers, validity_choices, waiting_risk
+from plot_quote_policy import save_eto_brief
+from submission import DEFAULT_TEAM_ID, add_planning_reference, build_submission, coverage_register, material_calibration
+from tco import migration_thresholds
 import targets as T
 
-OUT = D.OUT / "member3"
+OUT = D.OUT / "cost_pricing"
 
 
 def run(commercial_path=None, out=OUT, team_id=DEFAULT_TEAM_ID, offer_assumptions=OfferAssumptions()):
@@ -94,9 +94,9 @@ def run(commercial_path=None, out=OUT, team_id=DEFAULT_TEAM_ID, offer_assumption
         "material_band_plausibility": material_plausibility, "pricing_revenue": pricing,
         "elasticity_scenarios": elasticity,
         "pricing_decisions": decisions,
-        "forecast_decision_tests": tests, "member4_pricing_frontier": frontier, "member4_material_exposure": exposure,
+        "forecast_decision_tests": tests, "pricing_frontier": frontier, "material_exposure": exposure,
         "eto_quote_policy": offers, "eto_validity_backtest": validity, "eto_bom_index": index_history,
-        "eto_bom_index_weights": index_weights, "member4_tco_thresholds": tco,
+        "eto_bom_index_weights": index_weights, "tco_thresholds": tco,
         "submission_target_trace": submission_trace, "submission_coverage_register": coverage_register(bom),
         "submission_material_calibration": material_calibration(forecasts, lags).assign(
             evaluation="final_strategy_reapplied_retrospectively"),
@@ -128,7 +128,7 @@ def main():
                    "central_material_cost_change_eur_per_unit"]].round(4).to_string(index=False))
     print("Held-out backtest MAE in EUR per unit (strategy frozen in December 2024)")
     print(scores.pivot(index=["product", "h"], columns="method", values="mae_eur_per_unit").round(2).to_string())
-    print(f"Wrote Member 3 tables and figures to {OUT}")
+    print(f"Wrote BOM cost and pricing tables and figures to {OUT}")
 
 
 if __name__ == "__main__":

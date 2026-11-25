@@ -8,12 +8,12 @@ import pandas as pd
 
 import data as D
 import targets as T
-from member3_backtest import add_product_bands
-from member3_bom import COST
+from cost_backtest import add_product_bands
+from bom_cost import COST
 from models.base import HORIZONS
 
 DEFAULT_TEAM_ID = "team_04"
-AI_DISCLOSURE = "OpenAI Codex (code and analysis assistance; no LLM-generated predictions)"
+AI_DISCLOSURE = "OpenAI Codex; Claude Code (Anthropic) (code and analysis assistance; no LLM-generated predictions)"
 INDEX_UNIT = "index (origin=100)"
 QUANTILES = ["p10", "p50", "p90"]
 SUBMISSION_COLUMNS = ["team_id", "target_type", "target_id", "region", "origin_month", "horizon_m",
@@ -87,7 +87,7 @@ def build_submission(current, summary, panel, team_id):
     bom = bom.rename(columns={"product": "target_id", "h": "horizon_m"}).assign(
         target_type="bom_index", original_unit="EUR/unit", unit=INDEX_UNIT, region="EU",
         conversion="v1_basket_divided_by_origin_cost", model_name="v1_flat_cost+empirical_product_errors",
-        forecast_source="member3_v1_bom", selection_revision="",
+        forecast_source="v1_bom_flat_cost", selection_revision="",
     )
     out = pd.concat([selected, bom], ignore_index=True)
     out["team_id"] = team_id

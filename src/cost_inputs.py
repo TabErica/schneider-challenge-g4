@@ -1,4 +1,4 @@
-"""Read the foundation-model branch's existing forecast outputs for Member 3."""
+"""Read the foundation-model branch's existing forecast outputs for the BOM cost step."""
 from __future__ import annotations
 
 import pandas as pd
@@ -26,13 +26,13 @@ def load_branch_forecasts(backtest_dir, holdout_cutoff):
     if missing:
         missing_names = ", ".join(missing)
         raise ValueError(f"Missing foundation-model forecast inputs: {missing_names}. "
-                         "Generate the branch's default backtest outputs first. See MEMBER3.md.")
+                         "Generate the branch's default backtest outputs first. See README (Cost and pricing).")
     predictions, warmup = S.load(backtest_dir)
     origins = sorted(predictions["origin"].unique())
     if not origins:
         raise ValueError("The branch backtest has no candidate forecasts")
     if "ewmap" not in set(predictions["interval"]):
-        raise ValueError("The forecast inputs predate the foundation-model branch's ewmap outputs. See MEMBER3.md.")
+        raise ValueError("The forecast inputs predate the foundation-model branch's ewmap outputs. See README (Cost and pricing).")
 
     available = set(predictions.loc[predictions["interval"].eq("emp"), ["point", *KEY]]
                     .itertuples(index=False, name=None))

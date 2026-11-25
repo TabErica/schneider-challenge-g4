@@ -20,7 +20,8 @@ Put the challenge files, unchanged, in `Data/Data/` (git-ignored; nothing in it 
 | `Epoxy for student.xlsx` | Epoxy cost build-up (benzene, acetone, ECH, epoxy) | challenge data |
 | `RMU_IQI_EU_Price_Benchmark_2017-2026_Synthetic.xlsx` | Synthetic RMU selling prices | challenge data |
 | `Copia de Europe Steel INDEXES.xlsx` | CRU / MEPS EUR/t steel prices | **internal, licensed** |
-| `RM_Prices_XHEC_Challenge.xlsx` (standalone) | BOM_Materials sheet (replaces the older BOM in `data.zip`) | **internal** |
+| `RM_Prices_XHEC_Challenge.xlsx` (standalone) | BOM_Materials sheet (replaces the older BOM in `data.zip`); weights of the BOM indices in the backtest | **internal** |
+| `RM_Prices_XHEC_Challenge_v1.xlsx` | v1 BOM_Materials sheet (RM6 total 310 kg, AirSeT copper and epoxy lines); read only by `cost_pricing.py` | **internal** |
 | `Supplier_balancesheet.zip` | Supplier financials (PitchBook) | **internal**, not used yet |
 
 ### 2. Python environment (uv)
@@ -38,6 +39,7 @@ uv run python main.py --skip-sensitivity  # skip the sensitivity variants; --ski
 uv run python main.py --origin 2026-06  # held-back check: forecasting path only, data as of Jun-2026
 uv run python src/preprocess.py         # any single step
 uv run python src/backtest.py --help    # options (--no-nowcast, --drop-provisional, --bom-weights origin)
+uv run python src/cost_pricing.py --help  # BOM cost and pricing alone (reads the backtest outputs; commercial inputs)
 ```
 
 Optional: the Chronos-2 benchmark needs PyTorch (about 1 GB), kept out of the main install in the `fm` extra.
@@ -94,6 +96,13 @@ target, input hash and step; reused only for an identical input). `backtest_warm
 2018-19 warm-up origins (input of the rolling selection).
 `outputs/selection/` (`selection.py`): `candidates.csv`, `selected_choices.csv` (the rolling rule's choice at every
 origin), `asym_k.csv`, `selection_report.csv`, `selection_summary.csv`, `interval_choice.csv`, `submission_models.csv`, `band_plausibility.csv`.
+`outputs/cost_pricing/` (`cost_pricing.py`): the forecast CSV `team_04_forecast_202609.csv` (54 material rows + 6
+BOM-index rows), `submission_target_trace.csv` (provenance and unit conversion), BOM audit (`bom_coverage.csv`,
+`bom_reconciliation.csv`, `bom_sensitivity.csv`), `material_costs.csv`, `product_costs.csv`, product backtest
+(`product_backtest*.csv`, `product_holdout_scores.csv`: four point methods on dates after the December-2024 freeze),
+pricing (`pricing_revenue.csv`, `elasticity_scenarios.csv`, `pricing_decisions.csv`, `pricing_frontier.csv`,
+`material_exposure.csv`), quote policy (`eto_quote_policy.csv`, `eto_validity_backtest.csv`, `tco_thresholds.csv`),
+figures and three PDFs (`cost_pricing_figures.pdf`, `decision_brief.pdf`, `quote_policy_brief.pdf`).
 `DECK=1` renders charts in slide style to `outputs/slides/`. Colours: **RM6 green `#16884A`, RM AirSeT blue `#3478B8`**.
 
 | File | Role |
@@ -116,6 +125,18 @@ origin), `asym_k.csv`, `selection_report.csv`, `selection_summary.csv`, `interva
 | `src/sensitivity.py` | Backtest variants against the baseline (no nowcast, provisional dropped, origin BOM weights) → `sensitivity.csv`; a variant is re-run only when its inputs change (cache key) |
 | `src/plot_backtest.py` | Error relative to naive per series / model / horizon |
 | `src/diagrams.py` | Production chain (predictive links, `link_table`) and methodology diagrams |
+| `src/cost_pricing.py` | **BOM cost and pricing** entry point (last step of `main.py`): v1 BOM cost per unit at h = 3 / 6 / 9, product backtest, pricing and quote policy, forecast CSV → `outputs/cost_pricing/`. Options: `--team-id`, `--commercial-inputs PATH` (CSV keyed by product, target_month with any of units, base_price_eur_ex_vat, additional_direct_cost_eur_per_unit), quote constraints |
+| `src/cost_inputs.py` | Reads the backtest outputs and re-applies `selection.py` to get the submitted material forecasts, plus a strategy frozen in December 2024 for the held-out test |
+| `src/bom_cost.py` | v1 BOM: lines mapped to price series (copper `D01`, aluminium `D02`, steels CRU EUR/t, PET / engineering plastics `S11` × assumed EUR/t, epoxy), cost = kg × EUR/t at origin / P10 / P50 / P90; audit legacy vs v1; unpriced-mass and polymer-anchor sensitivity |
+| `src/cost_backtest.py` | Rolling validation of the product cost: bottom-up (selected material P50 × v1 weights), flat cost, direct AutoETS on the basket, legacy bottom-up; empirical product bands from past basket errors |
+| `src/submission.py` | Forecast CSV: material rows from the submission map (index → origin = 100, USD → EUR at the origin rate), BOM-index rows from the flat cost with empirical bands; provenance trace and coverage register |
+| `src/pricing_scenarios.py` | Price pass-through (0 / 50 / 100 % or cover the high stress), break-even volume, elasticity scenarios, against the synthetic benchmark or commercial inputs |
+| `src/pricing_decision.py` | HAC (Newey-West) tests of each method vs flat cost; optimal price uplift in whole cents under a revenue-loss limit (pricing frontier); material exposure |
+| `src/quote_policy.py` | ETO quote: validity window from the waiting risk of the basket, downside reserve, indexation clause trigger |
+| `src/tco.py` | RM6 vs AirSeT cost gap → annual TCO savings needed (10 / 20 / 30 years, 4 / 8 / 12 %) |
+| `src/plot_cost.py`, `src/plot_decision_brief.py`, `src/plot_quote_policy.py` | Figures and PDFs of the BOM cost, the pricing decision and the quote policy |
+| `notebooks/03_bom_eda.ipynb` | BOM EDA: material mass by product, price-proxy coverage, series mapping |
+| `notebooks/04_cost_pricing.ipynb` | Reads `outputs/cost_pricing/`: BOM audit, cost and its validation, pricing, quote policy |
 
 ## Findings so far
 
@@ -429,4 +450,5 @@ metadata; Chronos-2 as stated on its official model card (`license: apache-2.0`,
 
 ## AI-tool disclosure
 
-Code written with the help of Claude Code (Anthropic); results run and checked by the team.
+Code written with the help of OpenAI Codex and Claude Code (Anthropic); results run and checked by the team.
+No forecast is generated by an LLM. The forecast CSV states this in its `ai_tools` column (`src/submission.py`).

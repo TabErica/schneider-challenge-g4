@@ -1,12 +1,12 @@
-"""Export presentation-ready evidence for the Member 3 decision and Member 4 handoff."""
+"""Export presentation-ready evidence for the pricing decision and the commercial handoff."""
 from __future__ import annotations
 
 from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.ticker import PercentFormatter
 import numpy as np
 
-from member3_charts import BAR_DARK, BLUE, GOLD, GRID, INK, MUTED, PRODUCTS, figure, plt
-from member3_decision_analysis import optimal_quote
+from plot_cost import BAR_DARK, BLUE, GOLD, GRID, INK, MUTED, PRODUCTS, figure, plt
+from pricing_decision import optimal_quote
 
 EXAMPLE_FLOOR = -2.0
 EXAMPLE_BUDGET = 0.01
@@ -52,7 +52,7 @@ def simple_table(ax, columns, rows, bbox):
 def forecast_decision_slide(tests):
     significant = tests["p_bonferroni"].lt(0.05).sum()
     fig, axes = figure("Use flat cost as the planning reference",
-                       "Held-out MAE difference versus flat cost after freezing the Member 2 strategy in December 2024.",
+                       "Held-out MAE difference versus flat cost after freezing the selection strategy in December 2024.",
                        f"Paired Newey–West intervals with h − 1 lags and 95% familywise coverage (Bonferroni). "
                        f"{significant} of {len(tests)} comparisons reject at 5%.\n"
                        "All methods use the same dates and realized commodity proxies. The current BOM quantities are applied historically.")
@@ -60,7 +60,7 @@ def forecast_decision_slide(tests):
     pad = 0.06 * (high - low)
     for ax, (product, label) in zip(axes[0], PRODUCTS.items()):
         rows = tests.loc[tests["product"].eq(product)]
-        methods = [("bottom_up", "Member 2 bottom-up", BLUE, "o"), ("direct_autoets", "Direct AutoETS", GOLD, "s"),
+        methods = [("bottom_up", "Selected bottom-up", BLUE, "o"), ("direct_autoets", "Direct AutoETS", GOLD, "s"),
                    ("legacy_bottom_up", "Legacy bottom-up", MUTED, "^")]
         for offset, (method, method_label, color, marker) in zip((-0.20, 0, 0.20), methods):
             method_rows = rows.loc[rows["method"].eq(method)].sort_values("h")
@@ -161,9 +161,9 @@ def save_decision_brief(out, tests, frontier, exposure, sensitivity):
     figures.mkdir(exist_ok=True)
     pages = [("01_material_priorities", prioritization_slide, (frontier, exposure, sensitivity)),
              ("02_forecast_evidence", forecast_decision_slide, (tests,)), ("03_optimal_quote_proof", proof_slide, ()),
-             ("04_pricing_frontier", price_frontier_slide, (frontier,)), ("05_member4_handoff", handoff_slide, (frontier,))]
+             ("04_pricing_frontier", price_frontier_slide, (frontier,)), ("05_pricing_handoff", handoff_slide, (frontier,))]
     with plt.rc_context({"font.family": "DejaVu Sans", "text.color": INK, "axes.labelcolor": INK, "pdf.fonttype": 42}):
-        with PdfPages(out / "member3_decision_brief.pdf", metadata={"Title": "Member 3 — Quantitative Decision Brief"}) as pdf:
+        with PdfPages(out / "decision_brief.pdf", metadata={"Title": "Quantitative Decision Brief"}) as pdf:
             for name, build, args in pages:
                 fig = build(*args)
                 pdf.savefig(fig, facecolor="white")

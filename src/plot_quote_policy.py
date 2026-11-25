@@ -4,8 +4,8 @@ from __future__ import annotations
 from matplotlib.backends.backend_pdf import PdfPages
 import numpy as np
 
-from member3_charts import BLUE, GOLD, GRID, INK, MUTED, PRODUCTS, figure, plt
-from member3_decision_brief import simple_table
+from plot_cost import BLUE, GOLD, GRID, INK, MUTED, PRODUCTS, figure, plt
+from plot_decision_brief import simple_table
 
 
 def validity_slide(validity):
@@ -102,7 +102,7 @@ def save_eto_brief(out, offers, validity, tco):
     figures = out / "eto_figures"
     figures.mkdir(exist_ok=True)
     with plt.rc_context({"font.family": "DejaVu Sans", "text.color": INK, "pdf.fonttype": 42}):
-        with PdfPages(out / "member3_eto_final_brief.pdf", metadata={"Title": "Member 3 — Final ETO Policy"}) as pdf:
+        with PdfPages(out / "quote_policy_brief.pdf", metadata={"Title": "Final ETO Policy"}) as pdf:
             for name, build, args in pages:
                 fig = build(*args)
                 pdf.savefig(fig, facecolor="white")

@@ -1,4 +1,4 @@
-"""Ship the Member 3 figures as individual PNGs and a single vector PDF."""
+"""Ship the BOM cost and pricing figures as individual PNGs and a single vector PDF."""
 from __future__ import annotations
 
 import matplotlib
@@ -11,8 +11,8 @@ from matplotlib.ticker import PercentFormatter
 import numpy as np
 import pandas as pd
 
-from member3_bom import COST
-from member3_commercial import POLICIES
+from bom_cost import COST
+from pricing_scenarios import POLICIES
 
 RM6 = "RM6_NE_IQI_433520"
 AIRSET = "RMAirSeT_IIQ_24kV"
@@ -32,7 +32,7 @@ LARGEST_HORIZON = "Final forecast horizon"
 def figure(title, subtitle, note, rows=1, cols=2):
     fig, axes = plt.subplots(rows, cols, figsize=(11.5, 7.2), squeeze=False)
     fig.subplots_adjust(left=0.105, right=0.95, top=0.80, bottom=0.16, wspace=0.34, hspace=0.75)
-    fig.text(0.07, 0.955, "SCHNEIDER ELECTRIC DATA CHALLENGE / MEMBER 3", color=BLUE, fontsize=9, weight="bold")
+    fig.text(0.07, 0.955, "SCHNEIDER ELECTRIC DATA CHALLENGE / BOM COST AND PRICING", color=BLUE, fontsize=9, weight="bold")
     fig.text(0.07, 0.909, title, color=INK, fontsize=21, weight="bold")
     fig.text(0.07, 0.866, subtitle, color=MUTED, fontsize=10)
     fig.text(0.07, 0.052, note, color=MUTED, fontsize=9, linespacing=1.4)
@@ -116,7 +116,7 @@ def forecast_chart(summary):
         hi = rows["planning_p90_eur_per_unit"]
         ax.fill_between(h, lo, hi, color=COLORS[product], alpha=0.17, label="Empirical product band")
         ax.plot(x, np.r_[base, rows["planning_p50_eur_per_unit"]], color=COLORS[product], marker="o", label="Flat planning P50")
-        ax.plot(x, np.r_[base, rows[f"central_{COST}"]], color=MUTED, linestyle="--", marker=".", label="Member 2 bottom-up P50")
+        ax.plot(x, np.r_[base, rows[f"central_{COST}"]], color=MUTED, linestyle="--", marker=".", label="Selected bottom-up P50")
         ax.scatter(np.r_[h, h], pd.concat([rows[f"low_stress_{COST}"], rows[f"high_stress_{COST}"]]),
                    color=BAR_DARK, marker="x", label="Simultaneous stress")
         ax.set_xticks(x, [rows["origin_month"].iloc[0], *rows["target_month"]])
@@ -134,12 +134,12 @@ def forecast_chart(summary):
 
 def backtest_chart(scores):
     fig, axes = figure("Do the cost forecasts beat a flat baseline?",
-                       "Held-out MAE on identical origin dates after freezing the Member 2 strategy in December 2024.",
+                       "Held-out MAE on identical origin dates after freezing the selection strategy in December 2024.",
                        "Validation targets are realized commodity-price proxies applied to current BOM weights.\n"
                        "n gives the number of evaluated months per method. Input data use the latest available historical vintage.")
     y_max = scores["mae_eur_per_unit"].max() * 1.22
     methods = [("flat_cost", "Flat cost", BAR_LIGHT), ("direct_autoets", "Direct AutoETS", GOLD),
-               ("legacy_bottom_up", "Legacy bottom-up", MUTED), ("bottom_up", "Member 2 bottom-up", BLUE)]
+               ("legacy_bottom_up", "Legacy bottom-up", MUTED), ("bottom_up", "Selected bottom-up", BLUE)]
     for ax, (product, label) in zip(axes[0], PRODUCTS.items()):
         rows = scores.loc[scores["product"].eq(product)]
         table = rows.pivot(index="h", columns="method", values="mae_eur_per_unit")
@@ -253,7 +253,7 @@ def save_charts(out, coverage, detail, summary, scores, sensitivity, pricing, el
         ("07_revenue_and_elasticity", revenue_chart, (pricing, elasticity)),
     ]
     with plt.rc_context({"font.family": "DejaVu Sans", "text.color": INK, "axes.labelcolor": INK, "pdf.fonttype": 42}):
-        with PdfPages(out / "member3_figures.pdf", metadata={"Title": "Member 3 — Unit Cost, Pricing and Revenue"}) as pdf:
+        with PdfPages(out / "cost_pricing_figures.pdf", metadata={"Title": "Unit Cost, Pricing and Revenue"}) as pdf:
             for name, build, args in queries:
                 fig = build(*args)
                 fig.savefig(charts / f"{name}.png", dpi=180, facecolor="white")

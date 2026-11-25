@@ -8,8 +8,8 @@ import pandas as pd
 from scipy.stats import norm
 
 import data as D
-from member3_backtest import POINT_METHODS
-from member3_bom import COST
+from cost_backtest import POINT_METHODS
+from bom_cost import COST
 
 STRESS_BASES = {"simultaneous_high": f"high_stress_{COST}", "empirical_p90": "planning_p90_eur_per_unit"}
 ELASTICITY_FLOORS = (-1.0, -1.5, -2.0, -3.0)

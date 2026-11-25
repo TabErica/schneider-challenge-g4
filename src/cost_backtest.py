@@ -6,7 +6,7 @@ import pandas as pd
 from statsforecast.models import AutoETS
 
 import data as D
-from member3_forecast_inputs import load_branch_forecasts
+from cost_inputs import load_branch_forecasts
 import targets as T
 from models.base import HORIZONS
 
@@ -73,10 +73,10 @@ def select_material_forecasts(series, lags):
 
 
 def branch_material_forecasts(series, lags):
-    """Retrieve Member 2's final forecast rows and a separately frozen validation strategy."""
+    """Retrieve the selected material forecast rows and a separately frozen validation strategy."""
     selected, heldout, plausibility = load_branch_forecasts(BACKTEST, EVALUATION_CUTOFF)
     if selected["origin"].max() != D.BOM_BASE or heldout["origin"].max() != D.BOM_BASE:
-        raise ValueError("Member 2 forecasts must end at the submission origin")
+        raise ValueError("Selected material forecasts must end at the submission origin")
     legacy = select_material_forecasts(series, lags)
     public = set(T.ids("material", in_submission=True))
     keys = ["series", "h", "origin"]
@@ -90,9 +90,9 @@ def branch_material_forecasts(series, lags):
     selected_keys = pd.MultiIndex.from_frame(selected[keys])
     heldout_keys = pd.MultiIndex.from_frame(heldout[keys])
     if not public_keys.difference(selected_keys).empty or not selected_keys.difference(heldout_keys).empty:
-        raise ValueError("Member 2 is missing forecasts needed for product validation")
+        raise ValueError("The selection is missing forecasts needed for product validation")
 
-    selected["forecast_source"] = "member2_interval_pooling"
+    selected["forecast_source"] = "selection_submission_map"
     selected["selection_revision"] = SELECTION_REVISION
     selected["selection_n"] = np.nan
     precursors = legacy.loc[~legacy["series"].isin(public)].assign(

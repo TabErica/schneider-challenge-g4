@@ -7,8 +7,8 @@ import math
 import pandas as pd
 
 import data as D
-from member3_bom import COST
-from member3_decision_analysis import optimal_quote
+from bom_cost import COST
+from pricing_decision import optimal_quote
 
 SCENARIOS = ("upside", "baseline", "downside")
 VALIDITY_MONTHS = (0, 1, 2, 3)

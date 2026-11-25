@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 
 import data as D
-from member3_bom import COST
+from bom_cost import COST
 
 
 BENCHMARK_ID = {"RM6_NE_IQI_433520": "SE", "RMAirSeT_IIQ_24kV": "ETN"}
