@@ -1,5 +1,5 @@
 """Run the pipeline: preprocess -> EDA -> risk EDA -> features (leakage tests) -> backtest -> sensitivity -> model
-selection (submission model map) -> backtest chart -> diagrams. The backtest includes Chronos-2 (optional extra `fm`): forecasts come from outputs/backtest/fm_cache/,
+selection (submission model map) -> backtest chart -> diagrams -> Member 3 (cost forecasting and commercial decisions).. The backtest includes Chronos-2 (optional extra `fm`): forecasts come from outputs/backtest/fm_cache/,
 only missing ones are computed (skipped with a message when chronos-forecasting is not installed).
 
 Usage: python main.py [--origin YYYY-MM] [--skip-backtest] [--skip-sensitivity]
@@ -28,7 +28,8 @@ if a.origin > CUTOFF:
 
 if a.origin == CUTOFF:
     steps = [["preprocess.py"], ["eda.py"], ["eda_risk.py"], ["features.py"], ["backtest.py"], ["sensitivity.py"],
-             ["selection.py"], ["plot_backtest.py"], ["diagrams.py"]]
+             ["selection.py"], ["plot_backtest.py"], ["diagrams.py"],
+             ["member3.py", "--team-id", "team_04"]]
     if a.skip_backtest and (SRC.parent / "outputs/backtest/scores_per_series.csv").exists():
         steps = [s for s in steps if s[0] not in ("backtest.py", "sensitivity.py")]
     if a.skip_sensitivity:
