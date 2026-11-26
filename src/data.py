@@ -23,6 +23,7 @@ DRIVERS = {"ED01": "Brent (EUR/bbl)", "ED02": "EU gas TTF (EUR/MWh)", "E09": "Po
 # BOM masses come from the standalone BOM workbook (Schneider-internal, never hard-coded). It replaces the older
 # BOM shipped in data.zip (bom_materials.csv and the BOM_Materials sheet of data/RM_Prices_XHEC_Challenge.xlsx).
 BOM_FILE = DATA / "RM_Prices_XHEC_Challenge.xlsx"
+BOM_FILE_V1 = DATA / "RM_Prices_XHEC_Challenge_v1.xlsx"
 PRODUCT_ID = {"RMAirSeT IIQ 24kV IEC": "RMAirSeT_IIQ_24kV", "RM6_NE_IQI_433520": "RM6_NE_IQI_433520"}
 FAMILY_MAP = {  # BOM material_family -> (material, price proxy, EUR/t level source)
     "Carbon steel": ("Carbon steel", "S09", "cru_cr_de"),
@@ -38,6 +39,8 @@ FAMILY_MAP = {  # BOM material_family -> (material, price proxy, EUR/t level sou
 ASSUMED_PRICE_EUR_T = {"plastic_pet": 1300.0, "plastic_etp": 2700.0}
 ASSUMED_UNLABELLED_SHARE = 0.45  # RM6 largest unlabelled slice = carbon steel, ~45% of mass (older BOM label)
 BOM_BASE = pd.Timestamp("2026-09-01")
+EPOXY_LABEL = "Epoxy Resin EU"
+PET_LABEL = "PET Polyethylene Terephthalate EU"
 # Market-price version of the BOM index (see bom_index): steel lines follow CRU EUR/t prices, not the Eurostat PPI
 MARKET_PROXY = {"Carbon steel": "cru_cr_de", "Stainless steel": "ss304_de", "Galvanised steel": "cru_hdg_de"}
 BOM_MKT = "_mkt"  # column suffix of the market version
@@ -157,35 +160,51 @@ def eur_levels(rm, steel, at=BOM_BASE):
     return lv | ASSUMED_PRICE_EUR_T
 
 
-@functools.lru_cache(maxsize=1)
-def _load_bom_cached():
-    raw = pd.read_excel(BOM_FILE, sheet_name="BOM_Materials")
+def bom_line_source(label, family):
+    """(material, index proxy, EUR/t level source) of a BOM line, or None when it has no price. Epoxy is weighted at
+    the epoxy EUR/t price and moves with the plastics PPI S11; PE, PVC and PP have no grade-specific EUR/t level;
+    brass, "Other" and unidentified mass have no price series. Same rules as bom_cost.material_price."""
+    if label == EPOXY_LABEL:
+        return "Epoxy", "S11", "epoxy"
+    if family == "Plastic" and label != PET_LABEL:
+        return None
+    return FAMILY_MAP.get(family)
+
+
+@functools.lru_cache(maxsize=2)
+def _load_bom_cached(path):
+    raw = pd.read_excel(path, sheet_name="BOM_Materials")
+    raw.columns = raw.columns.str.strip()
     raw = raw[raw["product_ref"].isin(PRODUCT_ID)]
     if set(raw["product_ref"]) != set(PRODUCT_ID):
-        raise ValueError(f"{BOM_FILE.name}: expected products {sorted(PRODUCT_ID)}, found {sorted(set(raw['product_ref']))}")
+        raise ValueError(f"{path.name}: expected products {sorted(PRODUCT_ID)}, found {sorted(set(raw['product_ref']))}")
     rows = []
     for ref, g in raw.groupby("product_ref"):
         known = g.dropna(subset=["mass_kg", "share_pct"])
         implied_total = (known["mass_kg"] / known["share_pct"]).median()
         for r in g.itertuples():
-            if r.material_family not in FAMILY_MAP:
+            source = bom_line_source(r.material_label_source, r.material_family)
+            if source is None:
                 continue
             kg = ASSUMED_UNLABELLED_SHARE * implied_total if "to confirm" in r.material_family else r.mass_kg
-            mat, proxy, src = FAMILY_MAP[r.material_family]
+            mat, proxy, src = source
             rows.append({"product": PRODUCT_ID[ref], "material": mat, "proxy": proxy, "level_src": src, "kg": kg})
     return pd.DataFrame(rows)
 
 
-def load_bom():
-    """Priceable BOM lines (kg per unit) from BOM_FILE, with the unlabelled-slice assumption applied."""
-    return _load_bom_cached().copy()
+def load_bom(path=None):
+    """Priceable BOM lines (kg per unit) from `path` (default BOM_FILE), with the unlabelled-slice assumption applied."""
+    return _load_bom_cached(path or BOM_FILE).copy()
 
 
-def bom_cost_table(rm, steel, at=BOM_BASE):
+def bom_cost_table(rm, steel, at=BOM_BASE, bom_file=None):
     """Cost of every BOM line at `at` (kg x EUR/t level) and its share of the product cost. at=BOM_BASE gives the
-    submission weights; at=<origin> gives the weights a buyer could compute at that origin."""
+    submission weights; at=<origin> gives the weights a buyer could compute at that origin. bom_file: BOM workbook
+    (default BOM_FILE)."""
     lv = eur_levels(rm, steel, at)
-    b = load_bom()
+    b = load_bom(bom_file)
+    if b["level_src"].eq("epoxy").any():
+        lv["epoxy"] = _latest(rm["epoxy"] if "epoxy" in rm else load_epoxy()["epoxy"], at)
     b["eur_per_unit"] = b["kg"] * b["level_src"].map(lv) / 1000
     df = b.groupby(["product", "material", "proxy"], as_index=False)[["kg", "eur_per_unit"]].sum()
     df["eur_per_t"] = 1000 * df["eur_per_unit"] / df["kg"]
@@ -249,18 +268,19 @@ def bom_label(sid):
     return f"BOM {prod} ({'market prices' if sid.endswith(BOM_MKT) else 'PPI proxy'})"
 
 
-def panel(window="full", trail_fill=0):
+def panel(window="full", trail_fill=0, bom_file=None):
     """Preprocessed series + both BOM indices (Sep-2026 weights).
 
     window="full":   every series of the preprocessed panel with its full history (CRU from 2012, stainless from
                      2008, Westmetall from 2016-01, epoxy from 2018-01), up to Sep-2026. For forecasting.
     window="common": the EDA panel: the 14 public targets, both BOM indices and the drivers, Nov-2016 .. Sep-2026.
     trail_fill: months a BOM input may be carried forward to Sep-2026. EDA only (data.TRAIL_FILL); 0 = no fill,
-                so the market-price indices end Aug-2026 with stainless."""
+                so the market-price indices end Aug-2026 with stainless.
+    bom_file: BOM workbook of the indices (default BOM_FILE)."""
     import preprocess as P  # local import: preprocess imports this module
 
     c = P.load()
-    costs = bom_cost_table(c, c)
+    costs = bom_cost_table(c, c, bom_file=bom_file)
     bom = [bom_index(c, costs, v, trail_fill=trail_fill) for v in ("proxy", "market")]
     if window == "full":
         return c.join(bom).loc[:BOM_BASE]

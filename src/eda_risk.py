@@ -59,9 +59,9 @@ CALM = ["2017-19 calm", "2023-25 normalisation"]
 def load():
     """Studied series (SERIES) on the common window, plus the cost tables needed for contributions."""
     c = P.load()
-    p = D.panel(window="common", trail_fill=D.TRAIL_FILL)  # EDA window, descriptive only
+    p = D.panel(window="common", trail_fill=D.TRAIL_FILL, bom_file=D.BOM_FILE_V1)  # EDA window, descriptive only
     df = c.join(p[BOM_MKT + BOM_PROXY]).loc[p.index[0]:p.index[-1], list(SERIES)]
-    return df, c, D.bom_cost_table(c, c)
+    return df, c, D.bom_cost_table(c, c, bom_file=D.BOM_FILE_V1)
 
 
 def log_changes(df, h=1):

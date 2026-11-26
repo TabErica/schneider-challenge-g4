@@ -20,8 +20,8 @@ Put the challenge files, unchanged, in `Data/Data/` (git-ignored; nothing in it 
 | `Epoxy for student.xlsx` | Epoxy cost build-up (benzene, acetone, ECH, epoxy) | challenge data |
 | `RMU_IQI_EU_Price_Benchmark_2017-2026_Synthetic.xlsx` | Synthetic RMU selling prices | challenge data |
 | `Copia de Europe Steel INDEXES.xlsx` | CRU / MEPS EUR/t steel prices | **internal, licensed** |
-| `RM_Prices_XHEC_Challenge.xlsx` (standalone) | BOM_Materials sheet (replaces the older BOM in `data.zip`); weights of the BOM indices in the backtest | **internal** |
-| `RM_Prices_XHEC_Challenge_v1.xlsx` | v1 BOM_Materials sheet (RM6 total 310 kg, AirSeT copper and epoxy lines); read only by `cost_pricing.py` | **internal** |
+| `RM_Prices_XHEC_Challenge.xlsx` (standalone) | BOM_Materials sheet (replaces the older BOM in `data.zip`) | **internal** |
+| `RM_Prices_XHEC_Challenge_v1.xlsx` | BOM_Materials sheet, v1 (RM6 total 310 kg, AirSeT copper and epoxy lines) | **internal** |
 | `Supplier_balancesheet.zip` | Supplier financials (PitchBook) | **internal**, not used yet |
 
 ### 2. Python environment (uv)
@@ -151,10 +151,10 @@ figures and three PDFs (`cost_pricing_figures.pdf`, `decision_brief.pdf`, `quote
 - **Ranges are too narrow**: about 68% coverage against an 80% target. Why (risk EDA): misses are mostly upwards
   (18% above vs 7% below the band) and the 2020-26 volatility is about 2× the pre-2020 level; fat tails only matter
   beyond P95.
-- **The PPI proxy halves the steel risk**: with CRU market prices, the 3-month cost rise of one unit has P90 +12% /
-  P95 +17% (RM6) and P90 +14% / P95 +24% (AirSeT); the PPI-proxy index gives P95 +12% / +15%.
+- **The PPI proxy understates the steel risk**: with CRU market prices, the 3-month cost rise of one unit has P90 +11% /
+  P95 +17% (RM6) and P90 +11% / P95 +21% (AirSeT); the PPI-proxy index gives P95 +11% / +13%.
 - **Correlations double in stress** (mean pairwise 0.22 calm vs 0.45 in 2020-22): the cost P10 / P90 needs joint
-  scenarios; summing material quantiles is off by 15–36%.
+  scenarios; summing material quantiles is off by 21–51%.
 
 ### Backtest on data as of each origin (22 submitted targets + 3 epoxy inputs)
 

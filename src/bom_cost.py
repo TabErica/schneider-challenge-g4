@@ -8,7 +8,7 @@ import data as D
 from models.base import HORIZONS
 
 
-BOM_FILE = D.DATA / "RM_Prices_XHEC_Challenge_v1.xlsx"
+BOM_FILE = D.BOM_FILE_V1
 TOTAL_MASS_ROWS = {
     "RM6_NE_IQI_433520": "Source total mass – SFCME / RM6 (kg)",
     "RMAirSeT_IIQ_24kV": "Implied total mass – RMAirSeT (kg) = mass / share",
@@ -18,9 +18,9 @@ COST = "material_cost_eur_per_unit"
 
 def material_price(label, family):
     """Return a forecast series and an optional EUR/t anchor for an index series."""
-    if label == "Epoxy Resin EU":
+    if label == D.EPOXY_LABEL:
         return "epoxy", np.nan
-    if family == "Plastic" and label != "PET Polyethylene Terephthalate EU":
+    if family == "Plastic" and label != D.PET_LABEL:
         return None, np.nan  # PE, PVC and PP have no grade-specific price anchor.
     _, proxy, level = D.FAMILY_MAP.get(family, (None, None, None))
     if level in D.ASSUMED_PRICE_EUR_T:

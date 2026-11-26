@@ -139,14 +139,14 @@ def fig_bom_index(p):
     title(ax, "Material cost index per unit (fixed Sep-2026 BOM weights, Sep-2026 = 100)")
     ax.legend(loc="upper left", bbox_to_anchor=(0, 0.92))
     ax.set_ylabel("index")
-    note(fig, 0.01, -0.02, "Weights = kg (standalone BOM workbook) x EUR/t in Sep-2026. Steel lines follow CRU prices (solid) or "
-         "the Eurostat steel PPI (dashed). RM6 unlabelled 45% slice assumed carbon steel. Plastics EUR/t assumed.",
+    note(fig, 0.01, -0.02, "Weights = kg (BOM workbook) x EUR/t in Sep-2026. Steel lines follow CRU prices (solid) or "
+         "the Eurostat steel PPI (dashed). Plastics EUR/t assumed; epoxy moves with the plastics PPI.",
          fontsize=7.5, color=MUTED)
     return fig
 
 
 def fig_cost_structure(costs):
-    order = ["Carbon steel", "Stainless steel", "Copper", "Galvanised steel", "Plastics", "Aluminium"]
+    order = ["Carbon steel", "Stainless steel", "Copper", "Galvanised steel", "Plastics", "Epoxy", "Aluminium"]
     colors = dict(zip(order, SLOT))
     prods = [("RMAirSeT_IIQ_24kV", "RM AirSeT"), ("RM6_NE_IQI_433520", "RM6")]
     fig, ax = plt.subplots(figsize=(10, 3.4))
@@ -165,10 +165,10 @@ def fig_cost_structure(costs):
     ax.set_xlabel("EUR per unit (raw-material content only)")
     ax.grid(axis="y", visible=False)
     uniq = dict(zip(*reversed(ax.get_legend_handles_labels())))
-    ax.legend([uniq[m] for m in order], order, ncol=6, loc="lower left", bbox_to_anchor=(0, 1.0))
-    title(ax, "Two products, two different risks: RM6 is a copper bet, AirSeT a steel bet", pad=28)
+    ax.legend([uniq[m] for m in order if m in uniq], [m for m in order if m in uniq], ncol=7, loc="lower left", bbox_to_anchor=(0, 1.0))
+    title(ax, "Two products, two risk mixes: RM6 is mostly copper, AirSeT half steel, a third copper", pad=28)
     note(fig, 0.01, -0.06, "Sep-2026 prices: copper/aluminium LME (EUR), steel CRU Germany, stainless CRU 304 (Aug-26). "
-         "Plastics EUR/t assumed. RM6 unlabelled 45% slice assumed carbon steel.", fontsize=7.5, color=MUTED)
+         "Plastics EUR/t assumed. PE / PVC / PP, brass and 'Other' unpriced.", fontsize=7.5, color=MUTED)
     return fig
 
 
@@ -311,8 +311,8 @@ def benchmark_table(bm):
 
 def main():
     c = P.load()  # every source in one panel: cut at 2026-09, in EUR, typos corrected (coverage: series_catalog.csv)
-    p = D.panel(window="common", trail_fill=D.TRAIL_FILL)  # EDA window, descriptive only
-    costs = D.bom_cost_table(c, c)
+    p = D.panel(window="common", trail_fill=D.TRAIL_FILL, bom_file=D.BOM_FILE_V1)  # EDA window, descriptive only
+    costs = D.bom_cost_table(c, c, bom_file=D.BOM_FILE_V1)
     costs.to_csv(OUT / "bom_cost_table.csv", index=False, float_format="%.4f")
     vol = volatility_by_horizon(p)
     vol.to_csv(OUT / "volatility_by_horizon.csv", float_format="%.4f")
