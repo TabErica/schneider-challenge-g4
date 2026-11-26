@@ -187,6 +187,10 @@ def main():
     ei.to_csv(OUT / "epoxy_identity.csv", index=False, float_format="%.6g")
     n = check_no_leakage(cut)
     print(f"leakage test passed: {n} (origin, target) design rows identical as seen at the origin and in the full panel")
+    from models import fm  # here: models imports this module
+    n = fm.check_inputs(cut)
+    print(f"Chronos-2 input check passed: {n} (origin, target, version) inputs identical as seen at the origin and in "
+          "the full panel")
     print(av[["feature", "targets", "source", "lag_vs_origin_m", "first_month"]].to_string(index=False))
     print("\nepoxy identity check:")
     print(ei[["form", "r2", "max_abs_residual", "exact_identity"]].round(4).to_string(index=False))

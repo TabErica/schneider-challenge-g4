@@ -11,8 +11,15 @@ Rows: origins >= SCORE_START with a known outcome. A label is "<point model>+<in
   width         mean (P90 - P10) / y at the anchor
   winkler       mean Winkler score (alpha = 0.2) / y at the anchor: width + 10 x distance outside the band
   dm_stat, dm_p Diebold-Mariano on absolute errors vs naive, Newey-West variance with lag h_eff - 1 (negative stat =
-                better than naive); dm_better / dm_worse = targets with p < 0.05 in each direction
-Periods by origin: 2020-21, 2022, 2023-26, all.
+                better than naive), two-sided p
+  dm_q          Benjamini-Hochberg q value of dm_p. One family = every DM test of one per_series() call on the
+                submitted targets (all point models x targets x horizons of that period); the non-submitted targets
+                (epoxy inputs) form a family of their own. A test with no p (loss differential all 0, e.g. a model
+                whose P50 is naive) is not counted in the family.
+  dm_better / dm_worse        targets with q < 0.05 in each direction (the significance used in every conclusion)
+  dm_better_raw / dm_worse_raw  the same with the uncorrected p < 0.05 (for comparison only)
+Periods by origin (PERIODS, they overlap): 2020-01..2023-06 (stress: Covid, the 2021-22 rally, the energy crisis),
+2023-07..end (end = last origin with a known outcome), 2022 alone; plus all.
 """
 from __future__ import annotations
 
@@ -25,8 +32,9 @@ from models.base import QS
 
 ALPHA = 0.2
 SCORE_START = pd.Timestamp("2020-01-01")
-PERIODS = {"2020-21": ("2020-01-01", "2021-12-01"), "2022": ("2022-01-01", "2022-12-01"),
-           "2023-26": ("2023-01-01", "2026-12-01")}
+P1, P2, Y2022 = "2020-01..2023-06", "2023-07..end", "2022"
+PERIODS = {P1: ("2020-01-01", "2023-06-01"), P2: ("2023-07-01", None), Y2022: ("2022-01-01", "2022-12-01")}
+Q_LEVEL = 0.05
 NAIVE = "naive+emp"
 FAMILY = {t.id: t.family for t in T.REGISTRY}
 
@@ -49,6 +57,31 @@ def dm_test(d, lag):
     return stat, 2 * stats.norm.sf(abs(stat))
 
 
+def bh_qvalues(p):
+    """Benjamini-Hochberg (1995) q values of the p values `p` (one family); NaN p -> NaN q, not counted in the family."""
+    p = np.asarray(p, float)
+    q = np.full(p.shape, np.nan)
+    ok = np.isfinite(p)
+    n = ok.sum()
+    if n == 0:
+        return q
+    pv = p[ok]
+    o = np.argsort(pv)
+    adj = pv[o] * n / np.arange(1, n + 1)
+    adj = np.minimum.accumulate(adj[::-1])[::-1].clip(max=1.0)
+    out = np.empty(n)
+    out[o] = adj
+    q[ok] = out
+    return q
+
+
+def in_period(origin, p):
+    """Mask of the origins in period p of PERIODS (end None = up to the last origin)."""
+    a, b = PERIODS[p]
+    m = origin >= pd.Timestamp(a)
+    return m & (origin <= pd.Timestamp(b)) if b is not None else m
+
+
 def scored_rows(res):
     r = res[(res["origin"] >= SCORE_START) & res["actual"].notna()].copy()
     y, a = r["actual"], r["y_t"]
@@ -67,8 +100,6 @@ def scored_rows(res):
     r["naive_pinball"] = naive["pinball"].reindex(key).values
     r["naive_sae"] = naive["sae"].reindex(key).values
     r["family"] = r["series"].map(FAMILY)
-    r["period"] = pd.cut(r["origin"], [pd.Timestamp(PERIODS[p][0]) for p in PERIODS] + [pd.Timestamp("2100-01-01")],
-                         right=False, labels=list(PERIODS))
     return r
 
 
@@ -92,21 +123,29 @@ def per_series(r):
     for (p, s, h), g in pts.groupby(["point", "series", "h"]):
         st, pv = dm_test(g["ae"] - g["naive_ae"], int(g["h_eff"].max()) - 1)
         dm.append({"point": p, "series": s, "h": h, "dm_stat": st, "dm_p": pv})
-    per = per.merge(pd.DataFrame(dm, columns=["point", "series", "h", "dm_stat", "dm_p"]),
-                    on=["point", "series", "h"], how="left")
+    dm = pd.DataFrame(dm, columns=["point", "series", "h", "dm_stat", "dm_p"])
+    # Benjamini-Hochberg per family of tests: submitted targets / other targets; naive vs itself is not a test
+    dm["dm_q"] = np.nan
+    sub = dm["series"].map(lambda s: T.BY_ID[s].in_submission)
+    for fam_mask in (sub, ~sub):
+        m = fam_mask & (dm["point"] != "naive")
+        dm.loc[m, "dm_q"] = bh_qvalues(dm.loc[m, "dm_p"])
+    per = per.merge(dm, on=["point", "series", "h"], how="left")
     per["family"] = per["series"].map(FAMILY)
     per["in_submission"] = per["series"].map(lambda s: T.BY_ID[s].in_submission)
     return per
 
 
 def aggregate(per, by):
-    sig = per["dm_p"] < 0.05
+    sig, raw = per["dm_q"] < Q_LEVEL, per["dm_p"] < Q_LEVEL
     per = per.assign(dm_better=sig & (per["dm_stat"] < 0), dm_worse=sig & (per["dm_stat"] > 0),
+                     dm_better_raw=raw & (per["dm_stat"] < 0), dm_worse_raw=raw & (per["dm_stat"] > 0),
                      beats=per["rel_mae"] < 0.97)
     return per.groupby(by, observed=True).agg(
         mean_mape=("mape", "mean"), median_rel_mae=("rel_mae", "median"), mean_mase=("mase", "mean"),
         mean_naive_mase=("naive_mase", "mean"), complete=("complete", "all"),
         series_beating_naive=("beats", "sum"), dm_better=("dm_better", "sum"), dm_worse=("dm_worse", "sum"),
+        dm_better_raw=("dm_better_raw", "sum"), dm_worse_raw=("dm_worse_raw", "sum"),
         coverage80=("coverage80", "mean"), above=("above", "mean"), below=("below", "mean"), width=("width", "mean"),
         winkler=("winkler", "mean"), pinball=("pinball", "mean"), median_rel_pinball=("rel_pinball", "median"),
         fallback=("fallback", "mean"), n_series=("series", "nunique")).reset_index()
@@ -128,14 +167,15 @@ def best_by_family(fam, tol=0.03):
         bb = cand.sort_values("width").iloc[0] if len(cand) else g.sort_values(["gap", "width"]).iloc[0]
         rows.append({"family": f, "h": h, "n_series": int(bp["n_series"]), "best_point": bp["point"],
                      "mase": bp["mean_mase"], "naive_mase": nv["mean_mase"], "median_rel_mae": bp["median_rel_mae"],
-                     "dm_better": int(bp["dm_better"]), "best_band": bb["model"], "coverage80": bb["coverage80"],
+                     "dm_better": int(bp["dm_better"]), "dm_worse": int(bp["dm_worse"]), "best_band": bb["model"], "coverage80": bb["coverage80"],
                      "above": bb["above"], "below": bb["below"], "width": bb["width"], "winkler": bb["winkler"],
                      "band_within_tol": len(cand) > 0})
     return pd.DataFrame(rows)
 
 
 def score(res, save_dir=None):
-    """Per-series scores (all periods), summary of the submitted targets, family x period table and best models."""
+    """Per-series scores (all periods), summary of the submitted targets, family x period table and best models.
+    DM q values are per period (one BH family per period)."""
     r = scored_rows(res)
     per = per_series(r)
     sub = per[per["in_submission"]]
@@ -143,10 +183,10 @@ def score(res, save_dir=None):
     fam = [aggregate(sub, ["model", "point", "interval", "family", "h"]).assign(period="all")]
     rs = r[r["series"].map(lambda s: T.BY_ID[s].in_submission)]
     for p in PERIODS:
-        if not (rs["period"] == p).any():
+        m = in_period(rs["origin"], p)
+        if not m.any():
             continue
-        fam.append(aggregate(per_series(rs[rs["period"] == p]), ["model", "point", "interval", "family", "h"])
-                   .assign(period=p))
+        fam.append(aggregate(per_series(rs[m]), ["model", "point", "interval", "family", "h"]).assign(period=p))
     fam = pd.concat(fam, ignore_index=True)
     best = best_by_family(fam)
     if save_dir is not None:

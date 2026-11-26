@@ -103,6 +103,57 @@ ASSUMPTIONS = [
      "MAE over the scored origins among naive, drift, ETS, AutoETS, AutoARIMA, Theta, OptimizedTheta and the two "
      "combinations), chosen with hindsight, which favours the benchmark; Diebold-Mariano on absolute errors, "
      "Newey-West lag h_eff - 1, p < 0.05.", "models/multi.compare (multivariate_vs_univariate.csv)"),
+    ("A28", "model", "chronos2 (amazon/chronos-2, revision 29ec3766, chronos-forecasting 2.3.2, CPU), zero-shot: "
+     "context = the target's whole history up to its anchor as seen at the origin (as_of + nowcast, as every model), "
+     "fed as y / y[anchor] rounded to 10 decimals (scale-free, so the BOM indices give the same input whatever their "
+     "origin = 100 factor); max(h_eff) steps (9 with the nowcast); P10 / P50 / P90 at step h_eff, log of the "
+     "ratio = the log return. Series forecast independently (no cross-learning); no fine-tuning.", "models/fm.py"),
+    ("A29", "model", "chronos2_cov: as chronos2 + past covariates only (never known-future values): 1-3 source series "
+     "of the target's step-3 leading indicators, as published, aligned on the target's context months (values up to "
+     "the anchor). TTF dropped for HDG coil and LME aluminium to keep 3. Only the 11 family targets.",
+     "models/fm.COVARIATES"),
+    ("A30", "evaluation", "Pretraining leakage: Chronos-2's training corpus (parts of the Chronos and GIFT-Eval "
+     "pretraining data, incl. M4 monthly, plus synthetic series) has no published cutoff and may contain some public "
+     "series of this panel. Weights published on the Hugging Face hub on 2025-10-30 (paper 2025-10-17): origins from "
+     "2025-11 are reported separately (post_release); their outcomes cannot be in the training data.",
+     "models/fm.POST_RELEASE"),
+    ("A31", "pipeline", "Chronos forecasts are cached (outputs/backtest/fm_cache/) per origin, target and sha256 of "
+     "the exact input: a cached forecast is reused only for an identical input. Without the optional fm dependencies "
+     "the backtest reads the cache and skips what is missing.", "models/fm.Cache"),
+    ("A32", "evaluation", "Multiple testing: every Diebold-Mariano conclusion (vs naive, vs the best univariate model) "
+     "uses the Benjamini-Hochberg q value, q < 0.05. One family = all point models x submitted targets x horizons of "
+     "one table and period; tests without a p value (P50 = naive) are left out of the family. The raw p < 0.05 "
+     "counts are kept for comparison only.", "scoring.bh_qvalues, scoring.per_series"),
+    ("A33", "evaluation", "Every score is reported for two periods by origin, 2020-01..2023-06 (stress: Covid, the "
+     "2021-22 rally, the energy crisis) and 2023-07..last origin with a known outcome, plus 2022 alone and all.",
+     "scoring.PERIODS"),
+    ("A34", "selection", "Candidate point models fixed in advance with a reason each: naive, lme_fwd (copper and "
+     "aluminium only), combo_median, ets_local (S07-S13 and the PPI-proxy BOM indices only), chronos2. All other "
+     "models stay in the backtest report only.", "selection_config.CANDIDATES"),
+    ("A35", "selection", "Rolling selection 'selected': at origin t, errors published at or before t in the last 24 "
+     "months (at least 12 per target); per family the geometric mean over its targets of MAE / naive's MAE; each "
+     "target takes the best candidate that applies to it, naive if the gain is below 3%. Its band is the band of the "
+     "model it selected.", "selection.rolling_selection"),
+    ("A36", "interval", "Asymmetric band '<method>_up': P90 - P50 (log) times k >= 1 (grid 1.00-1.50, step 0.05; "
+     "capped at 1.5 by A39), "
+     "one k per point model, method, family and h: the smallest k with at most 10% of outcomes above P90 on the "
+     "2020-01..2023-06 origins whose outcome is published by 2023-07. The second period tests k out of sample.",
+     "selection.tune_asym"),
+    ("A37", "selection", "Submission map, per family x h: the point strategy (selected or combo_median) replaces "
+     "naive only if its geometric-mean MAE / naive is below 1 in both periods (lower worse-period ratio if both "
+     "are); 'selected' = the rolling rule's choice at Sep-2026. Band: 80% coverage within [0.70, 0.90] in both "
+     "periods, then the lowest Winkler; if no band qualifies, the highest stress-period coverage (capped at 0.90), "
+     "then Winkler. No manual choice.", "selection.point_strategy, selection.interval_choice"),
+    ("A38", "interval", "ewmap: residuals standardised by an EWMA volatility with lambda = 0.8 (half-life about 3 "
+     "months, faster than ewma's 0.9) and pooled over every target of the point model at the same horizon; at origin "
+     "t only residuals published by t; conformal bounds of the pool x the target's own volatility today. Pooling "
+     "assumes the standardised residuals of different targets share one distribution: the pool's tails then include "
+     "every target's stress months, not only the few dozen of one target. Fewer than 8 pooled residuals -> emp.",
+     "models/intervals._pooled"),
+    ("A39", "interval", "Cap of the asymmetric factor: k <= 1.5. k multiplies a log distance, so with k = 3 the 6-9 "
+     "month P90s at Sep-2026 reached +120% (copper) to +475% (plastics PPI), beyond any move of that length in the "
+     "data. band_plausibility.csv compares every submitted P90 with the largest past rise of the same length.",
+     "selection_config.ASYM_K_MAX, selection.plausibility"),
 ]
 
 

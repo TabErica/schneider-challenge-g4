@@ -14,6 +14,11 @@ dependencies = [
     "statsforecast==2.0.1",
 ]
 
+[project.optional-dependencies]
+fm = [
+    "chronos-forecasting==2.3.2",
+]
+
 [dependency-groups]
 dev = [
     "ipykernel==7.4.0",

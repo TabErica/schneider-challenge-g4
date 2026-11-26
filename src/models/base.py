@@ -113,6 +113,9 @@ class Model:
     def predict(self, ctx, s):
         raise NotImplementedError
 
+    def finish(self):
+        """Once after the last origin (e.g. write a forecast cache)."""
+
 
 def point(q50, n_train):
     return Pred(np.nan, float(q50), np.nan, int(n_train))

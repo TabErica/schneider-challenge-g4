@@ -151,9 +151,9 @@ def fig_chain():
         ax.text(x + 0.12, (y0 + nodes["hdg"][1]) / 2, f"HDG = CR coil + zinc coat\nsame month · r={r:.2f}",
                 fontsize=7 * K, color=INK, va="center", ha="left")
 
-    costs = D.bom_cost_table(D.load_rm(), D.load_steel_licensed())
+    costs = D.bom_cost_table(D.load_rm(), D.load_steel_licensed(), bom_file=D.BOM_FILE_V1)
     mat_node = {"Carbon steel": "cs", "Stainless steel": "ss", "Copper": "cu_m", "Galvanised steel": "hdg",
-                "Plastics": "plast", "Aluminium": "alu_m"}
+                "Plastics": "plast", "Epoxy": "epoxy", "Aluminium": "alu_m"}
     prods = [("RM6_NE_IQI_433520", "RM6  (SF6)", 6.6, PROD_COLOR["RM6"]),
              ("RMAirSeT_IIQ_24kV", "RM AirSeT  (SF6-free)", 3.0, PROD_COLOR["AirSeT"])]
     for pid, pname, py, pc in prods:
@@ -165,7 +165,6 @@ def fig_chain():
             x0, y0, _ = nodes[mat_node[r.material]]
             arrow(ax, (x0 + W / 2, y0), (X["prod"] - 1.05, py + (y0 - py) * 0.15), lw=0.6 + 6 * r.cost_share,
                   color=pc)
-    ax.text(nodes["epoxy"][0], nodes["epoxy"][1] - (0.7 if DECK else 0.58), "insulation parts; not in BOM shares", fontsize=7 * K, color=MUTED, ha="center")
 
     if not DECK:
         ax.text(-0.15, -0.45, "next 3 m: corr(last 3-month change upstream, next 3-month change downstream), no "

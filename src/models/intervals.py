@@ -12,6 +12,10 @@ Methods (label "<point>+<method>"):
           window is too thin
   ewma    conformal on residuals standardised by sigma * sqrt(h_eff), sigma = EWMA volatility of the target's monthly
           log changes known at the origin (lambda = EWMA_LAMBDA); bounds scaled back with today's sigma
+  ewmap   pooled ewma: the same standardisation with a faster EWMA (lambda = POOL_LAMBDA, sigma_fast), and the
+          quantiles taken over the standardised residuals of every target of the point model at that horizon (not
+          one target's few dozen), so the tails include every target's stress months; bounds scaled back with the
+          target's sigma_fast today
   native  the model's own quantiles (Ridge, GBM)
 
 No leakage: at origin t only residuals whose outcome is published at t are used (outcome month + data lag <= t,
@@ -29,18 +33,45 @@ import pandas as pd
 ALPHA = 0.2  # 80% band
 MIN_RES = 8
 EWMA_LAMBDA = 0.9  # monthly data: half-life about 6.6 months
+POOL_LAMBDA = 0.8  # ewmap: half-life about 3.1 months, reacts faster when a shock starts
 GAMMAS = (0.0, 0.005, 0.01, 0.02, 0.05)
 DEFAULT_GAMMA = 0.005  # Gibbs & Candes (2021)
 MIN_TUNE = 200  # active ACI bands needed to tune gamma
-METHODS = ("emp", "conf", "aci", "ewma")
+METHODS = ("emp", "conf", "aci", "ewma", "ewmap")
 
 
-def ewma_sigma(log_hist):
-    """EWMA volatility of monthly log changes (lambda = EWMA_LAMBDA)."""
+def ewma_sigma(log_hist, lam=EWMA_LAMBDA):
+    """EWMA volatility of monthly log changes (lambda = lam)."""
     r = log_hist.diff().dropna()
     if len(r) < 2:
         return np.nan
-    return float(np.sqrt((r ** 2).ewm(alpha=1 - EWMA_LAMBDA).mean().iloc[-1]))
+    return float(np.sqrt((r ** 2).ewm(alpha=1 - lam).mean().iloc[-1]))
+
+
+def _pooled(points, clock):
+    """ewmap bands for every row of `points`, aligned with its index. Per (point model, h): at each origin t, the
+    residuals revealed by t of every target of that model, divided by sigma_fast x sqrt(h_eff) of their own origin;
+    conformal bounds of that pool x the row's sigma_fast x sqrt(h_eff). Fewer than MIN_RES -> NaN (emp fallback)."""
+    c0 = time.perf_counter()
+    lo = pd.Series(np.nan, index=points.index)
+    hi = lo.copy()
+    for _, g in points.groupby(["point", "h"], sort=False):
+        scale = g["sigma_fast"] * np.sqrt(g["h_eff"])
+        z = ((g["r"] - g["q50"]) / scale).to_numpy()
+        rev = g["reveal"].to_numpy()
+        known = np.isfinite(z)
+        z, rev = z[known], rev[known]
+        order = np.argsort(rev, kind="stable")
+        z, rev = z[order], rev[order]
+        for t, gt in g.groupby("origin", sort=False):
+            k = np.searchsorted(rev, np.datetime64(t), side="right")
+            if k < MIN_RES:
+                continue
+            b = np.array(bounds(np.sort(z[:k]), ALPHA / 2, ALPHA / 2))
+            st = scale.loc[gt.index]
+            lo.loc[gt.index], hi.loc[gt.index] = b[0] * st, b[1] * st
+    clock["ewmap"] = clock.get("ewmap", 0.0) + time.perf_counter() - c0
+    return lo, hi
 
 
 def bounds(sorted_res, a_lo, a_hi):
@@ -108,6 +139,7 @@ def apply(points, warm_end):
     clock = {"emp": 0.0, "conf": 0.0, "ewma": 0.0, "aci": 0.0}
     for key, g in points.sort_values("origin").groupby(["point", "series", "h"], sort=False):
         streams[key] = (g, *_group(g, GAMMAS, clock))
+    pool_lo, pool_hi = _pooled(points, clock)
 
     # ACI gamma per point model (pooled over horizons and targets, so it does not depend on which other models run):
     # coverage closest to 80% (then narrowest) on the bands where ACI was active (not the emp fallback) and whose
@@ -140,11 +172,14 @@ def apply(points, warm_end):
     tune["rule"] = np.where(tune["chosen"], tune["point"].map(rules), "")
 
     for (pt, s, h), (g, out, aci, fb) in streams.items():
-        bands = dict(out) | {"aci": aci[best[pt]]}
+        plo, phi = pool_lo.loc[g.index].to_numpy(), pool_hi.loc[g.index].to_numpy()
+        pfb = ~(np.isfinite(plo) & np.isfinite(phi))
+        pooled = np.column_stack([np.where(pfb, out["emp"][:, 0], plo), np.where(pfb, out["emp"][:, 1], phi)])
+        bands = dict(out) | {"aci": aci[best[pt]], "ewmap": pooled}
         for m in METHODS:
             frames.append(pd.DataFrame({"point": pt, "interval": m, "series": s, "h": h, "origin": g["origin"].values,
                                         "q50": g["q50"].values, "lo": bands[m][:, 0], "hi": bands[m][:, 1],
-                                        "fallback": fb if m != "emp" else False}))
+                                        "fallback": {"emp": False, "ewmap": pfb}.get(m, fb)}))
     bands = pd.concat(frames, ignore_index=True)
     bands["q10"] = np.minimum(bands["q50"] + bands["lo"], bands["q50"])
     bands["q90"] = np.maximum(bands["q50"] + bands["hi"], bands["q50"])

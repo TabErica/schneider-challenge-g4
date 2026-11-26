@@ -37,7 +37,7 @@ MODELS = ["naive+emp", "ets_local+emp", "auto_ets+emp", "theta+emp", "combo_mean
           "ets_local+aci", "ets_local+ewma"]
 CODE = ["backtest.py", "preprocess.py", "data.py", "targets.py", "scoring.py", "models/__init__.py", "models/base.py",
         "models/classic.py", "models/sf.py", "models/combo.py", "models/lme.py", "models/intervals.py",
-        "models/multi.py", "features.py"]
+        "models/multi.py", "models/fm.py", "features.py"]
 
 
 def cache_key(args):
