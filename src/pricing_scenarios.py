@@ -40,7 +40,14 @@ def load_commercial_inputs(path, summary):
     return inputs
 
 
-def commercial_scenarios(summary, benchmark, inputs):
+def default_policies():
+    """Pricing policies and their pass-through of the central cost change (NaN = cover the high stress)."""
+    return pd.DataFrame({"policy": POLICIES, "pass_through": (*PASS_THROUGH, np.nan)})
+
+
+def commercial_scenarios(summary, benchmark, inputs, policies=None):
+    """Price scenarios per product and month; `policies` (policy, pass_through) defaults to default_policies()."""
+    policies = default_policies() if policies is None else policies
     benchmark = (benchmark.loc[benchmark["year"].eq(D.BOM_BASE.year), ["id", "brand", "year", "p10", "p50", "p90"]]
                  .rename(columns={"id": "benchmark_id", "brand": "benchmark_brand", "year": "benchmark_year",
                                   **{q: f"synthetic_benchmark_{q}_eur_ex_vat" for q in ("p10", "p50", "p90")}}))
@@ -58,7 +65,7 @@ def commercial_scenarios(summary, benchmark, inputs):
     scenarios["central_direct_cost_with_input_eur_per_unit"] = (
         scenarios[f"central_{COST}"] + scenarios["additional_direct_cost_eur_per_unit"]
     )
-    scenarios = scenarios.merge(pd.DataFrame({"policy": POLICIES, "pass_through": (*PASS_THROUGH, np.nan)}), how="cross")
+    scenarios = scenarios.merge(policies, how="cross")
     central_change = scenarios["central_material_cost_change_eur_per_unit"]
     stress_change = scenarios[f"high_stress_{COST}"] - scenarios[f"origin_{COST}"]
     stress_uplift = np.ceil(100 * stress_change.clip(lower=0)) / 100
