@@ -138,6 +138,26 @@ figures and three PDFs (`cost_pricing_figures.pdf`, `decision_brief.pdf`, `quote
 | `notebooks/03_bom_eda.ipynb` | BOM EDA: material mass by product, price-proxy coverage, series mapping |
 | `notebooks/04_cost_pricing.ipynb` | Reads `outputs/cost_pricing/`: BOM audit, cost and its validation, pricing, quote policy |
 
+### 5. Decision tool (Streamlit)
+
+A local app for non-coders (purchasing, sales) to test a quote decision on the pipeline's results:
+
+```bash
+uv run python main.py              # once: the app only reads outputs/ (it shows this command if a file is missing)
+uv run streamlit run app/Home.py   # opens http://localhost:8501
+uv run pytest tests/               # smoke test of every page; skipped without outputs/
+```
+
+| Page | Question it answers | Reads |
+|---|---|---|
+| Material forecasts | How far could a price move in 3 / 6 / 9 months, with which model, and is the P90 beyond any past move? (18 submitted materials + the 2 submitted v1 BOM indices) | forecast CSV, `submission_target_trace.csv`, `panel_monthly.csv`, `forecasts_at_origin.csv`, `submission_models.csv`, `band_plausibility.csv`, `eto_bom_index.csv` |
+| BOM cost | What does one RM6 / RM AirSeT unit cost in materials now and at each horizon (planning P10 / P50 / P90), and which material drives the all-materials P90 increase? | `product_costs.csv`, `material_costs.csv`, `material_exposure.csv` |
+| Quote simulator | For a product, horizon, selling price, quantity and cost scenario: price uplift, risk buffer, validity, indexation trigger and margin at risk, vs a simple pass-through | re-runs `commercial_scenarios`, `waiting_risk`, `validity_choices`, `make_offers` on `product_costs.csv`, `eto_bom_index.csv`, `pricing_revenue.csv` (benchmark) |
+
+It trains no model and runs no backtest. With default inputs the quote simulator gives exactly
+`eto_quote_policy.csv` / `pricing_decisions.csv` (checked by the test). The optional CSV upload has the format of
+`cost_pricing.py --commercial-inputs`. The app runs locally only; its inputs and outputs stay on your machine.
+
 ## Findings so far
 
 - **Exchange-traded prices** (LME metals, iron ore): no model clearly beats naive, so P50 = today's price and the

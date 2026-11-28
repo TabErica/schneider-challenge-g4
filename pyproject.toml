@@ -12,6 +12,7 @@ dependencies = [
     "statsmodels==0.15.0",
     "scikit-learn==1.9.1",
     "statsforecast==2.0.1",
+    "streamlit==1.67.0",
 ]
 
 [project.optional-dependencies]
@@ -23,4 +24,5 @@ fm = [
 dev = [
     "ipykernel==7.4.0",
     "pre-commit==4.7.0",
+    "pytest==9.2.0",
 ]
